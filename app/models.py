@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, Text, ForeignKey
+from sqlalchemy import Column, Integer, String, Float, Boolean, Text, ForeignKey, Date
 from sqlalchemy.orm import relationship
 from .database import Base
 
@@ -11,8 +11,14 @@ class User(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
+
     full_name = Column(String, nullable=True)
     phone = Column(String, nullable=True)
+
+    
+    gender = Column(String, nullable=True)          # e.g. "male" | "female" | "other" | "prefer_not_to_say"
+    date_of_birth = Column(Date, nullable=True)     # store as DATE (best)
+
     is_active = Column(Boolean, default=True)
     is_superuser = Column(Boolean, default=False)
 

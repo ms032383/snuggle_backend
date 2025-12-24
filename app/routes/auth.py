@@ -81,6 +81,8 @@ async def register_user(user_data: schemas.UserCreate, db: AsyncSession = Depend
         hashed_password=hashed_password,
         full_name=user_data.full_name,
         phone=user_data.phone,
+        gender=user_data.gender,
+        date_of_birth=user_data.date_of_birth,
         is_active=True,
         is_superuser=False  # Customers are NOT superusers
     )

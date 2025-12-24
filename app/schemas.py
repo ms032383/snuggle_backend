@@ -1,5 +1,6 @@
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List
+from datetime import date
 
 # ==============================
 # 1. AUTH & USER SCHEMAS
@@ -9,11 +10,17 @@ class UserCreate(BaseModel):
     password: str
     full_name: str
     phone: Optional[str] = None
+    gender: Optional[str] = None
+    date_of_birth: Optional[date] = None
+
 
 class UserResponse(BaseModel):
     id: int
     email: str
     full_name: Optional[str] = None
+    phone: Optional[str] = None
+    gender: Optional[str] = None
+    date_of_birth: Optional[date] = None
     is_active: bool
     is_superuser: bool
     class Config:
@@ -155,6 +162,8 @@ class BannerResponse(BannerBase):
 class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     phone: Optional[str] = None
+    gender: Optional[str] = None
+    date_of_birth: Optional[date] = None
 
 class WishlistAdd(BaseModel):
     product_id: int

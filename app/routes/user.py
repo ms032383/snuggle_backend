@@ -19,10 +19,23 @@ async def update_profile(
         current_user: models.User = Depends(dependencies.get_current_user),
         db: AsyncSession = Depends(database.get_db)
 ):
-    if user_update.full_name:
+    if user_update.full_name is not None:
         current_user.full_name = user_update.full_name
-    if user_update.phone:
+
+    if user_update.phone is not None:
         current_user.phone = user_update.phone
+
+    # ✅ NEW
+    if user_update.gender is not None:
+        g = user_update.gender.strip().lower()
+        allowed = {"male", "female", "other", "prefer_not_to_say"}
+        if g not in allowed:
+            raise HTTPException(status_code=400, detail=f"Invalid gender. Allowed: {sorted(allowed)}")
+        current_user.gender = g
+
+    # ✅ NEW (Pydantic date already)
+    if user_update.date_of_birth is not None:
+        current_user.date_of_birth = user_update.date_of_birth
 
     await db.commit()
     await db.refresh(current_user)
