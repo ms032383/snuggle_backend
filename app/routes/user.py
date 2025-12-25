@@ -47,6 +47,7 @@ async def update_profile(
 # --- WISHLIST LOGIC ---
 
 # 3. ADD TO WISHLIST
+# Update toggle_wishlist endpoint in user.py
 @router.post("/wishlist/toggle")
 async def toggle_wishlist(
         item: schemas.WishlistAdd,
@@ -55,20 +56,33 @@ async def toggle_wishlist(
 ):
     result = await db.execute(
         select(models.Wishlist)
-        .where(models.Wishlist.user_id == current_user.id, models.Wishlist.product_id == item.product_id)
+        .where(models.Wishlist.user_id == current_user.id,
+               models.Wishlist.product_id == item.product_id)
     )
     wishlist_item = result.scalar_one_or_none()
 
+    # Get product to update wishlist count
+    product_result = await db.execute(
+        select(models.Product).where(models.Product.id == item.product_id)
+    )
+    product = product_result.scalar_one_or_none()
+
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
     if wishlist_item:
+        # Remove from wishlist
         await db.delete(wishlist_item)
+        product.wishlist_count = max(0, product.wishlist_count - 1)
         await db.commit()
         return {"message": "Removed from wishlist", "added": False}
     else:
+        # Add to wishlist
         new_item = models.Wishlist(user_id=current_user.id, product_id=item.product_id)
         db.add(new_item)
+        product.wishlist_count += 1
         await db.commit()
         return {"message": "Added to wishlist", "added": True}
-
 # 4. GET MY WISHLIST
 @router.get("/wishlist", response_model=List[schemas.WishlistResponse])
 async def get_my_wishlist(

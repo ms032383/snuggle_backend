@@ -41,18 +41,45 @@ class Category(Base):
     products = relationship("Product", back_populates="category")
 
 
+# Update the existing Product model
 class Product(Base):
     __tablename__ = "products"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
     description = Column(Text, nullable=True)
     price = Column(Float)
+    mrp = Column(Float, nullable=True)  # ✅ ADDED: Max Retail Price
     stock = Column(Integer, default=10)
-    image_url = Column(String, nullable=True)
+    image_url = Column(String, nullable=True)  # Main/thumbnail image
     is_active = Column(Boolean, default=True)
 
+    # ✅ ADDED: New fields
+    sku = Column(String, unique=True, nullable=True)  # Stock Keeping Unit
+    tags = Column(Text, nullable=True)  # Comma-separated tags
+    weight_kg = Column(Float, nullable=True)
+    dimensions = Column(String, nullable=True)  # "10x10x10 cm"
+
+    # Ratings aggregation
+    average_rating = Column(Float, default=0.0)
+    review_count = Column(Integer, default=0)
+    wishlist_count = Column(Integer, default=0)
+
+    # SEO fields
+    meta_title = Column(String, nullable=True)
+    meta_description = Column(Text, nullable=True)
+    slug = Column(String, unique=True, nullable=True)
+
+    # Foreign keys
     category_id = Column(Integer, ForeignKey("categories.id"))
+
+    # Relationships
     category = relationship("Category", back_populates="products")
+
+    # ✅ ADDED: New relationships
+    gallery_images = relationship("ProductImage", back_populates="product", cascade="all, delete-orphan")
+    colors = relationship("ProductColor", back_populates="product", cascade="all, delete-orphan")
+    reviews = relationship("ProductReview", back_populates="product", cascade="all, delete-orphan")
+    specifications = relationship("ProductSpecification", back_populates="product", cascade="all, delete-orphan")
 
 
 # ============================
@@ -213,3 +240,71 @@ class CouponUsage(Base):  # ✅ Fixed Line
     coupon_type = Column(String)
     order_id = Column(Integer, nullable=True)
     used_at = Column(String, default="now")
+
+
+class ProductImage(Base):
+    """For multiple product images"""
+    __tablename__ = "product_images"
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.id"))
+    image_url = Column(String, nullable=False)
+    is_primary = Column(Boolean, default=False)
+    display_order = Column(Integer, default=0)
+    created_at = Column(String, default="now")
+
+    product = relationship("Product", back_populates="gallery_images")
+
+
+class ProductColor(Base):
+    """For product color variations"""
+    __tablename__ = "product_colors"
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.id"))
+    color_name = Column(String)
+    color_code = Column(String)  # Hex code like "#FF5733"
+    image_url = Column(String, nullable=True)  # Color-specific image
+    is_available = Column(Boolean, default=True)
+
+    product = relationship("Product", back_populates="colors")
+
+
+class ProductReview(Base):
+    """Customer reviews for products"""
+    __tablename__ = "product_reviews"
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
+
+    # Rating (1-5)
+    rating = Column(Integer, nullable=False)
+    comment = Column(Text, nullable=True)
+
+    # Review metadata
+    is_verified_purchase = Column(Boolean, default=False)
+    helpful_count = Column(Integer, default=0)
+
+    # Review images
+    image_urls = Column(Text, nullable=True)  # JSON string of image URLs
+
+    created_at = Column(String, default="now")
+    updated_at = Column(String, default="now")
+
+    # Relationships
+    product = relationship("Product", back_populates="reviews")
+    user = relationship("User")
+
+
+class ProductSpecification(Base):
+    """Product specifications/features"""
+    __tablename__ = "product_specifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    product_id = Column(Integer, ForeignKey("products.id"))
+    key = Column(String)  # e.g., "Material", "Size", "Weight"
+    value = Column(String)  # e.g., "Premium Cotton", "Large", "2kg"
+    display_order = Column(Integer, default=0)
+
+    product = relationship("Product", back_populates="specifications")

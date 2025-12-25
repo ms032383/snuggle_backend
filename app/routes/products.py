@@ -1,73 +1,169 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
 from typing import List, Optional
+import json
+from datetime import datetime
 from .. import models, schemas, database, dependencies
 
 router = APIRouter()
 
+
 # --- CATEGORY API ---
 @router.post("/categories", response_model=schemas.CategoryResponse)
-async def create_category(category: schemas.CategoryCreate, db: AsyncSession = Depends(database.get_db)):
+async def create_category(
+        category: schemas.CategoryCreate,
+        db: AsyncSession = Depends(database.get_db),
+        current_user: models.User = Depends(dependencies.get_current_admin)
+):
+    """Create a new category (Admin only)"""
     new_cat = models.Category(**category.dict())
     db.add(new_cat)
     await db.commit()
     await db.refresh(new_cat)
     return new_cat
 
+
 @router.get("/categories", response_model=List[schemas.CategoryResponse])
 async def get_categories(db: AsyncSession = Depends(database.get_db)):
+    """Get all categories"""
     result = await db.execute(select(models.Category))
     return result.scalars().all()
 
-# --- PRODUCT API ---
 
-# 1. Create Product
-@router.post("/", response_model=schemas.ProductResponse)
-async def create_product(product: schemas.ProductCreate, db: AsyncSession = Depends(database.get_db)):
+# --- ENHANCED PRODUCT API ---
+
+# 1. Create Product with Extended Features
+@router.post("/", response_model=schemas.ProductDetailResponse)
+async def create_product_extended(
+        product: schemas.ProductCreateExtended,
+        db: AsyncSession = Depends(database.get_db),
+        current_user: models.User = Depends(dependencies.get_current_admin)
+):
+    """Create product with extended features (Admin only)"""
     # Check if category exists
-    cat_result = await db.execute(select(models.Category).where(models.Category.id == product.category_id))
+    cat_result = await db.execute(
+        select(models.Category).where(models.Category.id == product.category_id)
+    )
     if not cat_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Category ID not found")
 
-    new_product = models.Product(**product.dict())
+    # Create main product
+    product_data = product.dict()
+
+    # Remove nested data for main product creation
+    gallery_images = product_data.pop('gallery_images', [])
+    colors = product_data.pop('colors', [])
+    specifications = product_data.pop('specifications', [])
+
+    # Set default MRP if not provided
+    if not product_data.get('mrp'):
+        product_data['mrp'] = product_data['price'] * 1.5  # 50% markup
+
+    # Set SKU if not provided
+    if not product_data.get('sku'):
+        product_data['sku'] = f"SKU-{int(datetime.now().timestamp())}"
+
+    new_product = models.Product(**product_data)
     db.add(new_product)
+    await db.flush()  # Get the product ID without committing
+
+    # Add gallery images
+    for i, image_url in enumerate(gallery_images):
+        gallery_image = models.ProductImage(
+            product_id=new_product.id,
+            image_url=image_url,
+            is_primary=(i == 0),
+            display_order=i
+        )
+        db.add(gallery_image)
+
+    # Add colors
+    for color_data in colors:
+        color = models.ProductColor(
+            product_id=new_product.id,
+            color_name=color_data['color_name'],
+            color_code=color_data['color_code'],
+            image_url=color_data.get('image_url'),
+            is_available=color_data.get('is_available', True)
+        )
+        db.add(color)
+
+    # Add specifications
+    for i, spec_data in enumerate(specifications):
+        spec = models.ProductSpecification(
+            product_id=new_product.id,
+            key=spec_data['key'],
+            value=spec_data['value'],
+            display_order=i
+        )
+        db.add(spec)
+
     await db.commit()
     await db.refresh(new_product)
-    return new_product
 
-# 2. Get All Products (With Search, Filter & Pagination) 🔥
+    # Return full product details
+    return await get_product_full_details(new_product.id, db)
+
+
+# 2. Get All Products with Enhanced Filtering
 @router.get("/", response_model=List[schemas.ProductResponse])
 async def get_products(
-    db: AsyncSession = Depends(database.get_db),
-    q: Optional[str] = None,          # Search Query (?q=teddy)
-    category_id: Optional[int] = None, # Filter by Category
-    min_price: Optional[float] = None, # Price Filter
-    max_price: Optional[float] = None,
-    sort: Optional[str] = None,       # Sort: low_to_high, high_to_low
-    skip: int = 0,                    # Pagination (Offset)
-    limit: int = 10                   # Pagination (Limit)
+        db: AsyncSession = Depends(database.get_db),
+        q: Optional[str] = None,  # Search Query
+        category_id: Optional[int] = None,  # Filter by Category
+        min_price: Optional[float] = None,  # Price Filter
+        max_price: Optional[float] = None,
+        min_rating: Optional[float] = None,  # Rating Filter
+        in_stock: Optional[bool] = None,  # Stock Filter
+        sort: Optional[str] = None,  # Sorting
+        skip: int = 0,  # Pagination
+        limit: int = 20  # Items per page
 ):
+    """Get all products with enhanced filtering"""
     # Base Query
     query = select(models.Product).where(models.Product.is_active == True)
 
     # Apply Filters
     if q:
-        query = query.where(models.Product.name.ilike(f"%{q}%")) # Case insensitive search
+        query = query.where(
+            models.Product.name.ilike(f"%{q}%") |
+            models.Product.description.ilike(f"%{q}%") |
+            models.Product.tags.ilike(f"%{q}%")
+        )
+
     if category_id:
         query = query.where(models.Product.category_id == category_id)
-    if min_price:
+
+    if min_price is not None:
         query = query.where(models.Product.price >= min_price)
-    if max_price:
+
+    if max_price is not None:
         query = query.where(models.Product.price <= max_price)
 
+    if min_rating is not None:
+        query = query.where(models.Product.average_rating >= min_rating)
+
+    if in_stock is not None:
+        if in_stock:
+            query = query.where(models.Product.stock > 0)
+        else:
+            query = query.where(models.Product.stock == 0)
+
     # Apply Sorting
-    if sort == "low_to_high":
+    if sort == "price_asc":
         query = query.order_by(models.Product.price.asc())
-    elif sort == "high_to_low":
+    elif sort == "price_desc":
         query = query.order_by(models.Product.price.desc())
+    elif sort == "rating":
+        query = query.order_by(models.Product.average_rating.desc())
+    elif sort == "popular":
+        query = query.order_by(models.Product.wishlist_count.desc())
+    elif sort == "newest":
+        query = query.order_by(models.Product.id.desc())
     else:
-        query = query.order_by(models.Product.id.desc()) # Default: Newest first
+        query = query.order_by(models.Product.id.desc())
 
     # Apply Pagination
     query = query.offset(skip).limit(limit)
@@ -76,60 +172,293 @@ async def get_products(
     result = await db.execute(query)
     return result.scalars().all()
 
-# 3. Get Single Product
-@router.get("/{id}", response_model=schemas.ProductResponse)
+
+# 3. Get Single Product with Full Details
+@router.get("/{id}", response_model=schemas.ProductDetailResponse)
 async def get_product_detail(id: int, db: AsyncSession = Depends(database.get_db)):
-    result = await db.execute(select(models.Product).where(models.Product.id == id))
-    product = result.scalar_one_or_none()
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-    return product
+    """Get single product with all related data"""
+    return await get_product_full_details(id, db)
 
 
-@router.put("/{product_id}", response_model=schemas.ProductResponse)
-async def update_product(
+# 4. Update Product with Extended Fields
+@router.put("/{product_id}", response_model=schemas.ProductDetailResponse)
+async def update_product_extended(
         product_id: int,
-        product_data: schemas.ProductCreate,  # Using Create schema as it has all fields
+        product_data: schemas.ProductUpdateExtended,
         db: AsyncSession = Depends(database.get_db),
-        current_user: models.User = Depends(dependencies.get_current_admin)  # Security: Only Admins
+        current_user: models.User = Depends(dependencies.get_current_admin)
 ):
-    # 1. Find Product
-    result = await db.execute(select(models.Product).where(models.Product.id == product_id))
+    """Update product with extended fields (Admin only)"""
+    # Find Product
+    query = select(models.Product).where(models.Product.id == product_id)
+    result = await db.execute(query)
     product = result.scalar_one_or_none()
 
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    # 2. Update Fields
-    product.name = product_data.name
-    product.description = product_data.description
-    product.price = product_data.price
-    product.stock = product_data.stock
-    product.category_id = product_data.category_id
+    # Update fields that are provided
+    update_data = product_data.dict(exclude_unset=True)
 
-    # Update Image if provided (Upload logic frontend se URL bhejega)
-    if product_data.image_url:
-        product.image_url = product_data.image_url
+    for field, value in update_data.items():
+        if value is not None:
+            setattr(product, field, value)
 
-    # 3. Save
+    # Save
     await db.commit()
     await db.refresh(product)
 
-    return product
+    # Return full product details
+    return await get_product_full_details(product_id, db)
 
 
-# ADD TO YOUR EXISTING PRODUCTS.PY
+# 5. Delete Product
+@router.delete("/{product_id}")
+async def delete_product(
+        product_id: int,
+        db: AsyncSession = Depends(database.get_db),
+        current_user: models.User = Depends(dependencies.get_current_admin)
+):
+    """Delete a product (Admin only) - Soft delete by setting is_active=False"""
+    query = select(models.Product).where(models.Product.id == product_id)
+    result = await db.execute(query)
+    product = result.scalar_one_or_none()
 
-@router.get("/add-ons")
-async def get_add_on_products(
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    # Soft delete
+    product.is_active = False
+    await db.commit()
+
+    return {"message": f"Product {product.name} has been deactivated"}
+
+
+# 6. Get Product Reviews
+@router.get("/{product_id}/reviews", response_model=List[schemas.ProductReviewResponse])
+async def get_product_reviews(
+        product_id: int,
+        skip: int = 0,
+        limit: int = 10,
+        sort_by: str = Query("recent", regex="^(recent|helpful|rating)$"),
         db: AsyncSession = Depends(database.get_db)
 ):
-    """
-    Get suggested add-on products for cart
-    """
+    """Get reviews for a specific product"""
+    # Check if product exists
+    product_result = await db.execute(
+        select(models.Product).where(models.Product.id == product_id)
+    )
+    if not product_result.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    # Base query
+    query = select(models.ProductReview).where(
+        models.ProductReview.product_id == product_id
+    ).options(selectinload(models.ProductReview.user))
+
+    # Apply sorting
+    if sort_by == "helpful":
+        query = query.order_by(models.ProductReview.helpful_count.desc())
+    elif sort_by == "rating":
+        query = query.order_by(models.ProductReview.rating.desc())
+    else:  # recent
+        query = query.order_by(models.ProductReview.created_at.desc())
+
+    # Apply pagination
+    query = query.offset(skip).limit(limit)
+
+    result = await db.execute(query)
+    reviews = result.scalars().all()
+
+    # Format response
+    formatted_reviews = []
+    for review in reviews:
+        image_urls = json.loads(review.image_urls) if review.image_urls else []
+        formatted_reviews.append(schemas.ProductReviewResponse(
+            id=review.id,
+            product_id=review.product_id,
+            user_id=review.user_id,
+            user_name=review.user.full_name if review.user else "Anonymous",
+            user_avatar=None,  # Add if you have user avatars
+            rating=review.rating,
+            comment=review.comment,
+            is_verified_purchase=review.is_verified_purchase,
+            helpful_count=review.helpful_count,
+            created_at=review.created_at,
+            updated_at=review.updated_at,
+            image_urls=image_urls
+        ))
+
+    return formatted_reviews
+
+
+# 7. Add Product Review
+@router.post("/{product_id}/reviews", response_model=schemas.ProductReviewResponse)
+async def add_product_review(
+        product_id: int,
+        review_data: schemas.ProductReviewCreate,
+        current_user: models.User = Depends(dependencies.get_current_user),
+        db: AsyncSession = Depends(database.get_db)
+):
+    """Add a review for a product"""
+    # Check if product exists
+    product_result = await db.execute(
+        select(models.Product).where(models.Product.id == product_id)
+    )
+    product = product_result.scalar_one_or_none()
+
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    # Check if user has already reviewed this product
+    existing_review = await db.execute(
+        select(models.ProductReview).where(
+            models.ProductReview.product_id == product_id,
+            models.ProductReview.user_id == current_user.id
+        )
+    )
+
+    if existing_review.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="You have already reviewed this product")
+
+    # Create review
+    new_review = models.ProductReview(
+        product_id=product_id,
+        user_id=current_user.id,
+        rating=review_data.rating,
+        comment=review_data.comment,
+        is_verified_purchase=review_data.is_verified_purchase,
+        image_urls=json.dumps(review_data.image_urls) if review_data.image_urls else None,
+        created_at=datetime.now().isoformat(),
+        updated_at=datetime.now().isoformat()
+    )
+
+    # Update product rating statistics
+    total_reviews = product.review_count + 1
+    total_rating = (product.average_rating * product.review_count) + review_data.rating
+    new_average = total_rating / total_reviews if total_reviews > 0 else 0
+
+    product.average_rating = round(new_average, 1)
+    product.review_count = total_reviews
+
+    db.add(new_review)
+    await db.commit()
+    await db.refresh(new_review)
+
+    # Format response
+    image_urls = json.loads(new_review.image_urls) if new_review.image_urls else []
+    return schemas.ProductReviewResponse(
+        id=new_review.id,
+        product_id=new_review.product_id,
+        user_id=new_review.user_id,
+        user_name=current_user.full_name,
+        user_avatar=None,
+        rating=new_review.rating,
+        comment=new_review.comment,
+        is_verified_purchase=new_review.is_verified_purchase,
+        helpful_count=new_review.helpful_count,
+        created_at=new_review.created_at,
+        updated_at=new_review.updated_at,
+        image_urls=image_urls
+    )
+
+
+# 8. Get Recommended Products
+@router.get("/{product_id}/recommended", response_model=List[schemas.ProductResponse])
+async def get_recommended_products(
+        product_id: int,
+        limit: int = Query(4, ge=1, le=20),
+        db: AsyncSession = Depends(database.get_db)
+):
+    """Get recommended products based on category and popularity"""
+    # Get current product category
+    product_result = await db.execute(
+        select(models.Product).where(models.Product.id == product_id)
+    )
+    current_product = product_result.scalar_one_or_none()
+
+    if not current_product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    # Get products from same category (excluding current product)
+    query = select(models.Product).where(
+        models.Product.category_id == current_product.category_id,
+        models.Product.id != product_id,
+        models.Product.is_active == True,
+        models.Product.stock > 0
+    ).order_by(
+        models.Product.average_rating.desc(),  # Sort by rating
+        models.Product.wishlist_count.desc(),  # Then by popularity
+        models.Product.id.desc()  # Then by newest
+    ).limit(limit)
+
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
+# 9. Get Product Images
+@router.get("/{product_id}/images", response_model=List[schemas.ProductImageResponse])
+async def get_product_images(
+        product_id: int,
+        db: AsyncSession = Depends(database.get_db)
+):
+    """Get all images for a product"""
+    query = select(models.ProductImage).where(
+        models.ProductImage.product_id == product_id
+    ).order_by(models.ProductImage.display_order)
+
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
+# 10. Get Product Colors
+@router.get("/{product_id}/colors", response_model=List[schemas.ProductColorResponse])
+async def get_product_colors(
+        product_id: int,
+        db: AsyncSession = Depends(database.get_db)
+):
+    """Get all colors for a product"""
+    query = select(models.ProductColor).where(
+        models.ProductColor.product_id == product_id,
+        models.ProductColor.is_available == True
+    )
+
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
+# 11. Mark Review as Helpful
+@router.post("/reviews/{review_id}/helpful")
+async def mark_review_helpful(
+        review_id: int,
+        current_user: models.User = Depends(dependencies.get_current_user),
+        db: AsyncSession = Depends(database.get_db)
+):
+    """Mark a review as helpful"""
+    # Get review
+    review_result = await db.execute(
+        select(models.ProductReview).where(models.ProductReview.id == review_id)
+    )
+    review = review_result.scalar_one_or_none()
+
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+
+    # Increment helpful count
+    review.helpful_count += 1
+    await db.commit()
+
+    return {"message": "Marked as helpful", "helpful_count": review.helpful_count}
+
+
+# 12. Get Add-on Products
+@router.get("/add-ons")
+async def get_add_on_products(db: AsyncSession = Depends(database.get_db)):
+    """Get suggested add-on products for cart"""
     result = await db.execute(
         select(models.Product)
-        .where(models.Product.category_id == 9)  # Add-on category
+        .where(models.Product.stock > 0, models.Product.is_active == True)
+        .order_by(models.Product.id.desc())
         .limit(4)
     )
     products = result.scalars().all()
@@ -144,3 +473,98 @@ async def get_add_on_products(
         }
         for p in products
     ]
+
+
+# 13. Bulk Update Products (Admin only)
+@router.patch("/bulk/update")
+async def bulk_update_products(
+        bulk_data: schemas.BulkProductUpdate,
+        db: AsyncSession = Depends(database.get_db),
+        current_user: models.User = Depends(dependencies.get_current_admin)
+):
+    """Bulk update multiple products (Admin only)"""
+    if not bulk_data.product_ids:
+        raise HTTPException(status_code=400, detail="No product IDs provided")
+
+    update_data = bulk_data.dict(exclude_unset=True, exclude={"product_ids"})
+
+    if not update_data:
+        raise HTTPException(status_code=400, detail="No update data provided")
+
+    # Get products
+    query = select(models.Product).where(models.Product.id.in_(bulk_data.product_ids))
+    result = await db.execute(query)
+    products = result.scalars().all()
+
+    if not products:
+        raise HTTPException(status_code=404, detail="No products found")
+
+    # Update products
+    for product in products:
+        for field, value in update_data.items():
+            if value is not None:
+                setattr(product, field, value)
+
+    await db.commit()
+
+    return {"message": f"Updated {len(products)} products successfully"}
+
+
+# Helper function to get full product details
+async def get_product_full_details(product_id: int, db: AsyncSession):
+    """Get product with all related data"""
+    # Query with all relationships
+    query = select(models.Product).where(models.Product.id == product_id).options(
+        selectinload(models.Product.gallery_images),
+        selectinload(models.Product.colors),
+        selectinload(models.Product.specifications),
+        selectinload(models.Product.reviews).selectinload(models.ProductReview.user),
+        selectinload(models.Product.category)
+    )
+
+    result = await db.execute(query)
+    product = result.scalar_one_or_none()
+
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    # Format reviews with user info
+    formatted_reviews = []
+    for review in product.reviews:
+        image_urls = json.loads(review.image_urls) if review.image_urls else []
+        formatted_reviews.append(schemas.ProductReviewResponse(
+            id=review.id,
+            product_id=review.product_id,
+            user_id=review.user_id,
+            user_name=review.user.full_name if review.user else "Anonymous",
+            user_avatar=None,  # Add if you have user avatars
+            rating=review.rating,
+            comment=review.comment,
+            is_verified_purchase=review.is_verified_purchase,
+            helpful_count=review.helpful_count,
+            created_at=review.created_at,
+            updated_at=review.updated_at,
+            image_urls=image_urls
+        ))
+
+    # Create response
+    return schemas.ProductDetailResponse(
+        id=product.id,
+        name=product.name,
+        description=product.description,
+        price=product.price,
+        mrp=product.mrp,
+        stock=product.stock,
+        image_url=product.image_url,
+        category_id=product.category_id,
+        is_active=product.is_active,
+        sku=product.sku,
+        tags=product.tags,
+        average_rating=product.average_rating,
+        review_count=product.review_count,
+        wishlist_count=product.wishlist_count,
+        gallery_images=product.gallery_images,
+        colors=product.colors,
+        specifications=product.specifications,
+        reviews=formatted_reviews
+    )

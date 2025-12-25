@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr,validator
+from pydantic import BaseModel, EmailStr, validator, Field
 from typing import Optional, List
 from datetime import date
 
@@ -215,6 +215,7 @@ class CouponApplyResponse(BaseModel):
 
 class CouponApply(BaseModel):
     code: str
+
 class CartItemUpdate(BaseModel):
     qty: int
 
@@ -247,6 +248,7 @@ class OrderStatusUpdate(BaseModel):
         if v not in valid_statuses:
             raise ValueError(f"Status must be one of: {', '.join(valid_statuses)}")
         return v
+
 class CartSummaryResponse(BaseModel):
     subtotal: float
     shipping: float
@@ -256,15 +258,10 @@ class CartSummaryResponse(BaseModel):
     item_count: int
     is_free_shipping: bool = False
 
-class CouponApply(BaseModel):
-    code: str
-
 class GiftWrapRequest(BaseModel):
     is_gift: bool = True
     message: Optional[str] = None
     wrap_type: str = "standard"
-class CartItemUpdate(BaseModel):
-    qty: int
 
 class AddToCartRequest(BaseModel):
     product_id: int
@@ -282,3 +279,206 @@ class AddOnProductResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ==============================
+# 9. ENHANCED PRODUCT SCHEMAS
+# ==============================
+
+# Product Image Schemas
+class ProductImageBase(BaseModel):
+    image_url: str
+    is_primary: bool = False
+    display_order: int = 0
+
+class ProductImageCreate(ProductImageBase):
+    product_id: int
+
+class ProductImageResponse(ProductImageBase):
+    id: int
+    class Config:
+        from_attributes = True
+
+
+# Product Color Schemas
+class ProductColorBase(BaseModel):
+    color_name: str
+    color_code: str
+    image_url: Optional[str] = None
+    is_available: bool = True
+
+class ProductColorCreate(ProductColorBase):
+    product_id: int
+
+class ProductColorResponse(ProductColorBase):
+    id: int
+    class Config:
+        from_attributes = True
+
+
+# Product Review Schemas
+class ProductReviewBase(BaseModel):
+    rating: int = Field(ge=1, le=5)
+    comment: Optional[str] = None
+    image_urls: Optional[List[str]] = []
+
+class ProductReviewCreate(ProductReviewBase):
+    product_id: int
+    is_verified_purchase: bool = False
+
+class ProductReviewResponse(ProductReviewBase):
+    id: int
+    product_id: int
+    user_id: int
+    user_name: Optional[str] = None
+    user_avatar: Optional[str] = None
+    is_verified_purchase: bool
+    helpful_count: int
+    created_at: str
+    updated_at: str
+    class Config:
+        from_attributes = True
+
+
+# Product Specification Schemas
+class ProductSpecificationBase(BaseModel):
+    key: str
+    value: str
+    display_order: int = 0
+
+class ProductSpecificationCreate(ProductSpecificationBase):
+    product_id: int
+
+class ProductSpecificationResponse(ProductSpecificationBase):
+    id: int
+    class Config:
+        from_attributes = True
+
+
+# Enhanced Product Base with all fields
+class ProductExtendedBase(BaseModel):
+    name: str
+    description: Optional[str] = None
+    price: float
+    mrp: Optional[float] = None
+    stock: int = 10
+    image_url: Optional[str] = None
+    category_id: int
+    sku: Optional[str] = None
+    tags: Optional[str] = None
+    is_active: bool = True
+
+
+# Product Create with extended fields
+class ProductCreateExtended(ProductExtendedBase):
+    """Extended product creation schema"""
+    gallery_images: Optional[List[str]] = []  # List of image URLs
+    colors: Optional[List[ProductColorCreate]] = []
+    specifications: Optional[List[ProductSpecificationBase]] = []
+
+
+# Product Update with extended fields
+class ProductUpdateExtended(BaseModel):
+    """Update product with extended fields"""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    price: Optional[float] = None
+    mrp: Optional[float] = None
+    stock: Optional[int] = None
+    image_url: Optional[str] = None
+    sku: Optional[str] = None
+    tags: Optional[str] = None
+    is_active: Optional[bool] = None
+    category_id: Optional[int] = None
+
+
+# Enhanced Product Response
+class ProductDetailResponse(ProductResponse):
+    """Extended product response with all details"""
+    mrp: Optional[float] = None
+    sku: Optional[str] = None
+    tags: Optional[str] = None
+    average_rating: float = 0.0
+    review_count: int = 0
+    wishlist_count: int = 0
+    gallery_images: List[ProductImageResponse] = []
+    colors: List[ProductColorResponse] = []
+    specifications: List[ProductSpecificationResponse] = []
+    reviews: List[ProductReviewResponse] = []
+    class Config:
+        from_attributes = True
+
+
+# Product Simple Response (for lists)
+class ProductSimpleResponse(BaseModel):
+    id: int
+    name: str
+    description: Optional[str] = None
+    price: float
+    mrp: Optional[float] = None
+    image_url: Optional[str] = None
+    average_rating: float = 0.0
+    review_count: int = 0
+    stock: int
+    class Config:
+        from_attributes = True
+
+
+# Review Vote Schema
+class ReviewVote(BaseModel):
+    is_helpful: bool = True
+
+
+# ==============================
+# 10. SEARCH & FILTER SCHEMAS
+# ==============================
+class ProductFilter(BaseModel):
+    category_id: Optional[int] = None
+    min_price: Optional[float] = None
+    max_price: Optional[float] = None
+    min_rating: Optional[float] = None
+    in_stock: Optional[bool] = None
+    sort_by: Optional[str] = None  # "price_asc", "price_desc", "rating", "popular", "newest"
+    colors: Optional[List[str]] = None
+    tags: Optional[List[str]] = None
+
+
+# ==============================
+# 11. WISHLIST ENHANCED
+# ==============================
+class WishlistItemResponse(BaseModel):
+    id: int
+    product_id: int
+    product: ProductSimpleResponse
+    added_at: str
+    class Config:
+        from_attributes = True
+
+
+# ==============================
+# 12. ANALYTICS SCHEMAS
+# ==============================
+class ProductAnalyticsResponse(BaseModel):
+    product_id: int
+    product_name: str
+    views_count: int = 0
+    wishlist_count: int = 0
+    cart_add_count: int = 0
+    purchase_count: int = 0
+    revenue_generated: float = 0.0
+    average_rating: float = 0.0
+    class Config:
+        from_attributes = True
+
+
+# ==============================
+# 13. BULK OPERATION SCHEMAS
+# ==============================
+class BulkProductUpdate(BaseModel):
+    product_ids: List[int]
+    price: Optional[float] = None
+    stock: Optional[int] = None
+    is_active: Optional[bool] = None
+
+class BulkProductDelete(BaseModel):
+    product_ids: List[int]

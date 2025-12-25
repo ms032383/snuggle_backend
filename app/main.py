@@ -7,7 +7,7 @@ from .routes import addons
 
 # Import your project modules
 from .database import engine, Base, AsyncSessionLocal, get_db
-from .routes import products, auth, cart, address, orders, payment, home, upload, user, admin, marketing
+from .routes import products, auth, cart, address, orders, payment, home, upload, user, admin, marketing,product_enhanced
 from .init_db import init_super_admin
 from . import models
 
@@ -54,6 +54,7 @@ app.include_router(user.router, prefix="/api/users", tags=["User Profile & Wishl
 app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
 app.include_router(marketing.router, prefix="/api/admin/marketing", tags=["Marketing"])
 app.include_router(addons.router, prefix="/api/addons", tags=["Add-ons"])
+app.include_router(product_enhanced.router, prefix="/api/products", tags=["Product Enhanced"])
 
 
 @app.get("/")
