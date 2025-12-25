@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from typing import List, Optional
-from .. import models, schemas, database
+from .. import models, schemas, database, dependencies
 
 router = APIRouter()
 
@@ -84,3 +84,63 @@ async def get_product_detail(id: int, db: AsyncSession = Depends(database.get_db
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     return product
+
+
+@router.put("/{product_id}", response_model=schemas.ProductResponse)
+async def update_product(
+        product_id: int,
+        product_data: schemas.ProductCreate,  # Using Create schema as it has all fields
+        db: AsyncSession = Depends(database.get_db),
+        current_user: models.User = Depends(dependencies.get_current_admin)  # Security: Only Admins
+):
+    # 1. Find Product
+    result = await db.execute(select(models.Product).where(models.Product.id == product_id))
+    product = result.scalar_one_or_none()
+
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    # 2. Update Fields
+    product.name = product_data.name
+    product.description = product_data.description
+    product.price = product_data.price
+    product.stock = product_data.stock
+    product.category_id = product_data.category_id
+
+    # Update Image if provided (Upload logic frontend se URL bhejega)
+    if product_data.image_url:
+        product.image_url = product_data.image_url
+
+    # 3. Save
+    await db.commit()
+    await db.refresh(product)
+
+    return product
+
+
+# ADD TO YOUR EXISTING PRODUCTS.PY
+
+@router.get("/add-ons")
+async def get_add_on_products(
+        db: AsyncSession = Depends(database.get_db)
+):
+    """
+    Get suggested add-on products for cart
+    """
+    result = await db.execute(
+        select(models.Product)
+        .where(models.Product.category_id == 9)  # Add-on category
+        .limit(4)
+    )
+    products = result.scalars().all()
+
+    return [
+        {
+            "id": p.id,
+            "name": p.name,
+            "image_url": p.image_url,
+            "price": p.price,
+            "category": "addon"
+        }
+        for p in products
+    ]

@@ -3,6 +3,7 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.future import select
 from passlib.context import CryptContext
+from .routes import addons
 
 # Import your project modules
 from .database import engine, Base, AsyncSessionLocal, get_db
@@ -52,6 +53,7 @@ app.include_router(user.router, prefix="/api/users", tags=["User Profile & Wishl
 
 app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
 app.include_router(marketing.router, prefix="/api/admin/marketing", tags=["Marketing"])
+app.include_router(addons.router, prefix="/api/addons", tags=["Add-ons"])
 
 
 @app.get("/")

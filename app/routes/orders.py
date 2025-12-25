@@ -145,3 +145,39 @@ async def get_order_details(
         raise HTTPException(status_code=404, detail="Order not found")
 
     return order
+
+
+# ==========================================
+# 4. UPDATE ORDER STATUS (Admin only)
+# ==========================================
+@router.patch("/{order_id}/status")
+async def update_order_status(
+    order_id: int,
+    status_update: schemas.OrderStatusUpdate,
+    current_user: models.User = Depends(dependencies.get_current_user),
+    db: AsyncSession = Depends(database.get_db)
+):
+    # Only admin can update order status
+    if not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Only admin can update order status")
+
+    # Get the order
+    result = await db.execute(
+        select(models.Order)
+        .where(models.Order.id == order_id)
+    )
+    order = result.scalar_one_or_none()
+
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    # Update status
+    order.status = status_update.status
+    await db.commit()
+    await db.refresh(order)
+
+    return {
+        "message": f"Order #{order_id} status updated to {status_update.status}",
+        "order_id": order_id,
+        "new_status": status_update.status
+    }

@@ -157,10 +157,59 @@ class Wishlist(Base):
 
 class Coupon(Base):
     __tablename__ = "coupons"
+
+    # These are the EXACT columns in your database
     id = Column(Integer, primary_key=True, index=True)
-    code = Column(String, unique=True, index=True)
-    discount_type = Column(String)  # 'Percentage' or 'Fixed'
-    value = Column(Float)
-    usage_count = Column(Integer, default=0)
+    code = Column(String, nullable=True, index=True)
+    discount_type = Column(String, nullable=True)
+    value = Column(Float, nullable=True)
+    usage_count = Column(Integer, nullable=True)  # This is 'usage_count' in your DB
+    is_active = Column(Boolean, nullable=True)
+    expiry_date = Column(String, nullable=True)  # Stored as string
+
+    # Add any missing columns you need
+    min_cart_value = Column(Float, nullable=True, default=0)
+    max_discount = Column(Float, nullable=True)
+    created_at = Column(String, nullable=True, default="now")
+class CartGift(Base):
+    __tablename__ = "cart_gifts"
+    id = Column(Integer, primary_key=True, index=True)
+    cart_id = Column(Integer, ForeignKey("carts.id"))
+    is_gift = Column(Boolean, default=False)
+    gift_message = Column(Text, nullable=True)
+    gift_wrap_type = Column(String, default="standard")
+
+
+class CartSettings(Base):
+    __tablename__ = "cart_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    is_gift = Column(Boolean, default=False)
+    gift_message = Column(Text, nullable=True)
+    gift_wrap_type = Column(String(20), default="standard")
+    coupon_applied = Column(String(50), nullable=True)
+    created_at = Column(String, default="now")
+    updated_at = Column(String, default="now")
+
+
+class AddOnProduct(Base):
+    __tablename__ = "addon_products"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String)
+    description = Column(Text, nullable=True)
+    price = Column(Float)
+    image_url = Column(String)
+    category = Column(String, default="addon")
     is_active = Column(Boolean, default=True)
-    expiry_date = Column(String, nullable=True)
+
+class CouponUsage(Base):  # ✅ Fixed Line
+    __tablename__ = "coupon_usages"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    coupon_code = Column(String, index=True)
+    coupon_type = Column(String)
+    order_id = Column(Integer, nullable=True)
+    used_at = Column(String, default="now")

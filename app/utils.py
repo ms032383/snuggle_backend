@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from jose import JWTError, jwt
 from typing import Optional
 
+
 # ⚠️ Production mein ye SECRET_KEY .env file mein honi chahiye!
 SECRET_KEY = "my_super_secret_key_change_this_later"
 ALGORITHM = "HS256"

@@ -2,15 +2,16 @@ from fastapi import APIRouter, UploadFile, File, HTTPException
 import cloudinary
 import cloudinary.uploader
 import os
-
+from dotenv import load_dotenv
+load_dotenv()
 router = APIRouter()
 
 # 1. Configuration (Apni Keys yahan daalein)
 # Production mein ye .env file se aana chahiye
 cloudinary.config(
-    cloud_name="dvoxhfgrt",
-    api_key="672468764517841",
-    api_secret="TTyqUEDmXc1T5X89nVMQKySKTfg"
+    cloud_name=os.getenv("cloud_name"),
+    api_key=os.getenv("api_key"),
+    api_secret=os.getenv("api_secret"),
 )
 
 

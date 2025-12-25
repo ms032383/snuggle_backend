@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr,validator
 from typing import Optional, List
 from datetime import date
 
@@ -174,21 +174,111 @@ class WishlistResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
 class CouponBase(BaseModel):
     code: str
-    discount_type: str = "Fixed"
+    discount_type: str = "fixed"  # 'percentage' or 'fixed'
     value: float
     expiry_date: Optional[str] = None
     is_active: bool = True
 
+    # ✅ Added missing fields
+    min_cart_value: float = 0.0
+    max_discount: Optional[float] = None
+
+
 class CouponCreate(CouponBase):
     pass
 
+
+# ✅ 1. CRUD RESPONSE (For Admin/Marketing) -> Matches Database
 class CouponResponse(CouponBase):
     id: int
-    usage_count: int
+    usage_count: int = 0
+    created_at: Optional[str] = None
+
     class Config:
         from_attributes = True
 
+
+# ✅ 2. CART APPLY RESPONSE (For User/Cart) -> Matches Calculation Logic
+class CouponApplyResponse(BaseModel):
+    code: str
+    discount_type: str
+    value: float
+    message: str
+    new_total: float
+
+    class Config:
+        from_attributes = True
+
+
+class CouponApply(BaseModel):
+    code: str
 class CartItemUpdate(BaseModel):
     qty: int
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class CartWithSettingsResponse(BaseModel):
+    items: List[CartItemResponse]
+    subtotal: float
+    shipping: float
+    tax: float
+    discount: float
+    total: float
+    is_gift: bool = False
+    gift_message: Optional[str] = None
+    coupon_applied: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class OrderStatusUpdate(BaseModel):
+    status: str
+
+    @validator('status')
+    def validate_status(cls, v):
+        valid_statuses = ["Pending", "Processing", "Packed", "Shipped", "Delivered", "Cancelled"]
+        if v not in valid_statuses:
+            raise ValueError(f"Status must be one of: {', '.join(valid_statuses)}")
+        return v
+class CartSummaryResponse(BaseModel):
+    subtotal: float
+    shipping: float
+    tax: float
+    discount: float
+    total: float
+    item_count: int
+    is_free_shipping: bool = False
+
+class CouponApply(BaseModel):
+    code: str
+
+class GiftWrapRequest(BaseModel):
+    is_gift: bool = True
+    message: Optional[str] = None
+    wrap_type: str = "standard"
+class CartItemUpdate(BaseModel):
+    qty: int
+
+class AddToCartRequest(BaseModel):
+    product_id: int
+    quantity: int = 1
+    size: Optional[str] = None
+    color: Optional[str] = None
+
+
+class AddOnProductResponse(BaseModel):
+    id: int
+    name: str
+    price: float
+    image_url: str
+    category: str
+
+    class Config:
+        from_attributes = True

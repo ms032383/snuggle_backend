@@ -6,6 +6,7 @@ from sqlalchemy.future import select
 from .database import get_db
 from .models import User
 from .utils import SECRET_KEY, ALGORITHM
+from . import database, models, utils
 
 # Ye Swagger UI ko batata hai ki Token kahan se lena hai (Login route se)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
@@ -38,3 +39,13 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
         raise credentials_exception
 
     return user
+
+async def get_current_admin(
+    current_user: models.User = Depends(get_current_user)
+) -> models.User:
+    if not current_user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The user doesn't have enough privileges"
+        )
+    return current_user

@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from typing import List
-from .. import models, schemas, database, dependencies
+from .. import models, schemas, database, dependencies,utils
 
 router = APIRouter()
 
@@ -40,6 +40,9 @@ async def update_profile(
     await db.commit()
     await db.refresh(current_user)
     return current_user
+
+
+
 
 # --- WISHLIST LOGIC ---
 
@@ -86,3 +89,26 @@ async def read_users_me(current_user: models.User = Depends(dependencies.get_cur
     Ye endpoint batayega ki current logged-in user kaun hai.
     """
     return current_user
+
+
+# 👇 ADD THIS NEW ROUTE
+@router.post("/change-password")
+async def change_password(
+        password_data: schemas.PasswordChangeRequest,
+        current_user: models.User = Depends(dependencies.get_current_user),
+        db: AsyncSession = Depends(database.get_db)
+):
+    # 1. Purana Password Check karein (Using utils.verify_password)
+    # Ye aapke utils.py function ko call karega
+    if not utils.verify_password(password_data.current_password, current_user.hashed_password):
+        raise HTTPException(status_code=400, detail="Incorrect current password")
+
+    # 2. Naya Password Hash karein (Using utils.get_password_hash)
+    # Ye bhi aapke utils.py function ko call karega
+    hashed_new_password = utils.get_password_hash(password_data.new_password)
+
+    # 3. Database Update
+    current_user.hashed_password = hashed_new_password
+    await db.commit()
+
+    return {"message": "Password updated successfully"}

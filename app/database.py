@@ -1,10 +1,15 @@
+import os
+
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
+from dotenv import load_dotenv
+load_dotenv()
 
 # 👇 Changes:
 # 1. 'psycopg2' ki jagah 'asyncpg' kar diya.
 # 2. Port 5432 rakha hai (Direct connection ke liye safe hai).
-DATABASE_URL = "postgresql+asyncpg://postgres.zklwqiutppjzufuvicjh:G2SRV3icAcrzb5cU@aws-1-ap-south-1.pooler.supabase.com:5432/postgres"
+DATABASE_URL = os.getenv("database_key")
+
 
 # Create Engine
 engine = create_async_engine(DATABASE_URL, echo=True)

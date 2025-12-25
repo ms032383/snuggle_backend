@@ -1,9 +1,12 @@
+import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
+from typing import List
 from .. import models, schemas, database, dependencies
-from fastapi import status
+from ..services.cart_service import CartService
 
 router = APIRouter()
 
@@ -112,3 +115,163 @@ async def update_cart_item_quantity(
         return {"message": "Item removed"}
 
     return {"message": "Quantity updated", "new_qty": cart_item.quantity}
+
+
+# ADD THESE NEW ENDPOINTS:
+
+@router.get("/summary", response_model=schemas.CartSummaryResponse)
+async def get_cart_summary(
+        current_user: models.User = Depends(dependencies.get_current_user),
+        db: AsyncSession = Depends(database.get_db)
+):
+    """Get detailed cart summary for checkout"""
+
+    # 1. Pehle check karein ki user ne koi coupon apply kiya hai ya nahi
+    result = await db.execute(
+        select(models.CartSettings).where(models.CartSettings.user_id == current_user.id)
+    )
+    settings = result.scalar_one_or_none()
+
+    # 2. Agar coupon hai, toh code nikalein
+    coupon_code = settings.coupon_applied if settings else None
+
+    # 3. Service ko coupon code pass karein taaki wo discount calculate kare
+    summary = await CartService.get_cart_summary(current_user.id, db, coupon_code)
+
+    return summary
+
+@router.post("/apply-coupon", response_model=schemas.CouponApplyResponse)  # ✅ Changed Schema
+async def apply_coupon_to_cart(
+        coupon_data: schemas.CouponApply,
+        current_user: models.User = Depends(dependencies.get_current_user),
+        db: AsyncSession = Depends(database.get_db)
+):
+    """Apply coupon code to cart"""
+    try:
+        # Get cart subtotal first
+        result = await db.execute(
+            select(models.Cart)
+            .options(selectinload(models.Cart.items).selectinload(models.CartItem.product))
+            .where(models.Cart.user_id == current_user.id)
+        )
+        cart = result.scalar_one_or_none()
+
+        if not cart or not cart.items:
+            raise HTTPException(status_code=400, detail="Cart is empty")
+
+        # Calculate Subtotal
+        subtotal = sum(item.product.price * item.quantity for item in cart.items)
+
+        # Apply coupon
+        discount, discount_type, coupon_code = await CartService.apply_coupon(
+            coupon_data.code, subtotal, current_user.id, db
+        )
+
+        # Save applied coupon to cart settings
+        result = await db.execute(
+            select(models.CartSettings).where(models.CartSettings.user_id == current_user.id)
+        )
+        settings = result.scalar_one_or_none()
+
+        if not settings:
+            settings = models.CartSettings(user_id=current_user.id, coupon_applied=coupon_code)
+            db.add(settings)
+        else:
+            settings.coupon_applied = coupon_code
+
+        await db.commit()
+
+        # Prepare Response Message
+        message = f"₹{discount:.0f} off applied!" if discount_type == "fixed" else f"{discount}% off applied!"
+
+        return {
+            "code": coupon_code,
+            "discount_type": discount_type,
+            "value": discount,
+            "message": message,
+            "new_total": subtotal - discount
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/gift-wrap")
+async def set_gift_wrapping(
+        gift_data: schemas.GiftWrapRequest,
+        current_user: models.User = Depends(dependencies.get_current_user),
+        db: AsyncSession = Depends(database.get_db)
+):
+    """Set gift wrapping options"""
+    result = await db.execute(
+        select(models.CartSettings).where(models.CartSettings.user_id == current_user.id)
+    )
+    settings = result.scalar_one_or_none()
+
+    if not settings:
+        settings = models.CartSettings(
+            user_id=current_user.id,
+            is_gift=gift_data.is_gift,
+            gift_message=gift_data.message,
+            gift_wrap_type=gift_data.wrap_type
+        )
+        db.add(settings)
+    else:
+        settings.is_gift = gift_data.is_gift
+        settings.gift_message = gift_data.message
+        settings.gift_wrap_type = gift_data.wrap_type
+
+    await db.commit()
+
+    return {"message": "Gift wrapping updated", "is_gift": gift_data.is_gift}
+
+
+@router.get("/full", response_model=schemas.CartWithSettingsResponse)
+async def get_full_cart(
+        current_user: models.User = Depends(dependencies.get_current_user),
+        db: AsyncSession = Depends(database.get_db)
+):
+    """Get cart with all settings and calculations"""
+    # Get cart with items
+    result = await db.execute(
+        select(models.Cart)
+        .options(selectinload(models.Cart.items).selectinload(models.CartItem.product))
+        .where(models.Cart.user_id == current_user.id)
+    )
+    cart = result.scalar_one_or_none()
+
+    if not cart:
+        return {
+            "items": [],
+            "subtotal": 0,
+            "shipping": 0,
+            "tax": 0,
+            "discount": 0,
+            "total": 0,
+            "is_gift": False,
+            "gift_message": None,
+            "coupon_applied": None
+        }
+
+    # Get cart settings
+    result = await db.execute(
+        select(models.CartSettings).where(models.CartSettings.user_id == current_user.id)
+    )
+    settings = result.scalar_one_or_none()
+
+    # Get summary
+    coupon_code = settings.coupon_applied if settings else None
+    summary = await CartService.get_cart_summary(current_user.id, db, coupon_code)
+
+    # Prepare response
+    return {
+        "items": cart.items,
+        "subtotal": summary["subtotal"],
+        "shipping": summary["shipping"],
+        "tax": summary["tax"],
+        "discount": summary["discount"],
+        "total": summary["total"],
+        "is_gift": settings.is_gift if settings else False,
+        "gift_message": settings.gift_message if settings else None,
+        "coupon_applied": settings.coupon_applied if settings else None
+    }
