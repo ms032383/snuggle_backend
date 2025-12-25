@@ -13,18 +13,22 @@ from datetime import datetime, timedelta
 router = APIRouter()
 
 # 1. DASHBOARD ANALYTICS (Revenue, Orders Count)
+# ----------------------------------------------------------------
+# 1. MAIN DASHBOARD ANALYTICS (Fixed Revenue Logic)
+# ----------------------------------------------------------------
 @router.get("/analytics/summary")
 async def get_analytics(
-        # ✅ FIX 1: Renamed 'range' to 'time_range' using Alias
-        # Isse 'range' variable built-in function ko overwrite nahi karega
         time_range: str = Query("30d", alias="range"),
         db: AsyncSession = Depends(database.get_db),
-        # current_user: models.User = Depends(dependencies.get_current_admin)
 ):
-    # 1. Basic Stats Queries
-    revenue_query = await db.execute(select(func.sum(models.Order.total_amount)))
+    # ✅ FIX 1: Total Revenue (Only 'Delivered' orders)
+    revenue_query = await db.execute(
+        select(func.sum(models.Order.total_amount))
+        .where(models.Order.status == "Delivered")  # Sirf Delivered count hoga
+    )
     total_revenue = revenue_query.scalar() or 0.0
 
+    # Orders Count (All orders are fine to count)
     orders_query = await db.execute(select(func.count(models.Order.id)))
     total_orders = orders_query.scalar() or 0
 
@@ -34,8 +38,7 @@ async def get_analytics(
     failed_query = await db.execute(select(func.count(models.Order.id)).where(models.Order.status == "Cancelled"))
     failed_payments = failed_query.scalar() or 0
 
-    # 2. Recent Orders (Top 5)
-    # ✅ FIX 2: Added selectinload for items to prevent MissingGreenlet error
+    # Recent Orders
     recent_orders_query = await db.execute(
         select(models.Order)
         .options(selectinload(models.Order.user), selectinload(models.Order.items))
@@ -55,51 +58,42 @@ async def get_analytics(
             "status": o.status
         })
 
-    # ---------------------------------------------------------
-    # 3. 📊 DATA AGGREGATION (Revenue Trend, Payment, Delivery)
-    # ---------------------------------------------------------
-
-    all_orders_result = await db.execute(select(models.Order))
-    all_orders = all_orders_result.scalars().all()
-
-    # A. Revenue Trend (Last 7 Days)
+    # ✅ FIX 2: Revenue Trend (Accurate Date Matching)
     today = datetime.now().date()
-
-    # ✅ FIX 3: Ab 'range()' built-in function sahi chalega
+    # Map: {'2025-12-25': 0.0, ...}
     trend_map = {(today - timedelta(days=i)).isoformat(): 0.0 for i in range(6, -1, -1)}
 
-    # B. Counters
+    # Fetch data for trend (Only Delivered orders for revenue)
+    trend_data = await db.execute(
+        select(models.Order)
+        .where(models.Order.status == "Delivered")
+    )
+    delivered_orders = trend_data.scalars().all()
+
+    for order in delivered_orders:
+        if order.created_at:
+            # Handle DateTime to Date String conversion
+            # SQLAlchemy DateTime return karta hai, usse .date() mein convert karo
+            o_date = order.created_at.date().isoformat()  # '2025-12-26'
+            if o_date in trend_map:
+                trend_map[o_date] += (order.total_amount or 0)
+
+    # Calculation for Splits (Based on all orders)
+    all_orders_res = await db.execute(select(models.Order))
+    all_orders = all_orders_res.scalars().all()
+
     payment_counts = {"COD": 0, "UPI": 0, "Card": 0}
     delivery_counts = {"Delivered": 0, "In Transit": 0, "RTO": 0}
 
-    # Process Orders
     for order in all_orders:
-        # Trend Calculation
-        if order.created_at:
-            try:
-                # Convert datetime to date string 'YYYY-MM-DD'
-                # Handle both datetime object and string just in case
-                if isinstance(order.created_at, str):
-                    order_date = order.created_at.split(' ')[0]
-                else:
-                    order_date = order.created_at.date().isoformat()
-
-                if order_date in trend_map:
-                    trend_map[order_date] += (order.total_amount or 0)
-            except Exception as e:
-                print(f"Date parsing error: {e}")
-                pass
-
-        # Payment Split
-        method = order.payment_method or "COD"
-        if "UPI" in method.upper():
+        method = (order.payment_method or "COD").upper()
+        if "UPI" in method:
             payment_counts["UPI"] += 1
-        elif "CARD" in method.upper():
+        elif "CARD" in method:
             payment_counts["Card"] += 1
         else:
             payment_counts["COD"] += 1
 
-        # Delivery Split
         status = order.status or "Pending"
         if status == "Delivered":
             delivery_counts["Delivered"] += 1
@@ -110,66 +104,7 @@ async def get_analytics(
         else:
             delivery_counts["In Transit"] += 1
 
-        # Convert counts to Percentages
     total_count = len(all_orders) if len(all_orders) > 0 else 1
-
-    payment_split = {
-        "UPI": round((payment_counts["UPI"] / total_count) * 100),
-        "COD": round((payment_counts["COD"] / total_count) * 100),
-        "Cards": round((payment_counts["Card"] / total_count) * 100)
-    }
-
-    delivery_status = {
-        "Delivered": round((delivery_counts["Delivered"] / total_count) * 100),
-        "In Transit": round((delivery_counts["In Transit"] / total_count) * 100),
-        "RTO": round((delivery_counts["RTO"] / total_count) * 100)
-    }
-
-    # Extract Trend Values List
-    revenue_trend = list(trend_map.values())
-
-    # ---------------------------------------------------------
-    # 4. 🚨 GENERATE ALERTS
-    # ---------------------------------------------------------
-    alerts = []
-
-    # Alert 1: Low Stock
-    low_stock_query = await db.execute(select(models.Product).where(models.Product.stock < 5).limit(3))
-    low_stock_products = low_stock_query.scalars().all()
-
-    for prod in low_stock_products:
-        alerts.append({
-            "title": "Low Stock Alert",
-            "message": f"'{prod.name}' has only {prod.stock} units left.",
-            "type": "error",
-            "timestamp": "Now"
-        })
-
-    # Alert 2: High Value Pending Orders
-    for o in recent_orders_list:
-        if o.status == "Pending" and o.total_amount > 5000:
-            alerts.append({
-                "title": "High Value Order",
-                "message": f"Order #{o.id} of ₹{o.total_amount} is pending approval.",
-                "type": "warning",
-                "timestamp": "Recent"
-            })
-
-    if not alerts:
-        alerts.append({
-            "title": "System Status",
-            "message": "All systems operational.",
-            "type": "info",
-            "timestamp": "Now"
-        })
-
-    # 5. Category Split (Mock Logic for now)
-    category_split = {
-        "Couple Sets": 40,
-        "Gifts for Him": 30,
-        "Gifts for Her": 20,
-        "Others": 10
-    }
 
     return {
         "totalRevenue": total_revenue,
@@ -179,11 +114,92 @@ async def get_analytics(
         "avgOrderValue": total_revenue / total_orders if total_orders > 0 else 0,
         "returningCustomers": 10,
         "recentOrders": formatted_recent_orders,
-        "revenueTrend": revenue_trend,
-        "paymentSplit": payment_split,
-        "deliveryStatus": delivery_status,
-        "alerts": alerts,
-        "categorySplit": category_split
+        "revenueTrend": list(trend_map.values()),
+        "paymentSplit": {k: round((v / total_count) * 100) for k, v in payment_counts.items()},
+        "deliveryStatus": {k: round((v / total_count) * 100) for k, v in delivery_counts.items()},
+        "alerts": [],
+        "categorySplit": {"Couple Sets": 40, "Gifts": 60}
+    }
+
+
+# ----------------------------------------------------------------
+# 2. NEW PAYMENT DASHBOARD API (Custom Logic)
+# ----------------------------------------------------------------
+@router.get("/analytics/payments")
+async def get_payment_analytics(db: AsyncSession = Depends(database.get_db)):
+    # 1. COD Pending Money (Method=COD aur Status Delivered nahi hai)
+    cod_pending_res = await db.execute(
+        select(func.sum(models.Order.total_amount))
+        .where(models.Order.payment_method == "COD")
+        .where(models.Order.status.notin_(["Delivered", "Cancelled", "Returned"]))
+    )
+    cod_pending = cod_pending_res.scalar() or 0.0
+
+    # 2. UPI Received (Total UPI orders logic)
+    # UPI paisa pehle aa jata hai, lekin agar order deliver nahi hua to liability hai
+    upi_pending_order_res = await db.execute(
+        select(func.sum(models.Order.total_amount))
+        .where(models.Order.payment_method.ilike("%UPI%"))
+        .where(models.Order.status.notin_(["Delivered", "Cancelled"]))
+    )
+    upi_pending_orders_amt = upi_pending_order_res.scalar() or 0.0
+
+    # 3. Total Received (Delivered Revenue)
+    total_rev_res = await db.execute(
+        select(func.sum(models.Order.total_amount)).where(models.Order.status == "Delivered")
+    )
+    total_rev = total_rev_res.scalar() or 0.0
+
+    # 4. Failed Payments (Mock logic based on Cancelled orders)
+    failed_res = await db.execute(
+        select(func.count(models.Order.id)).where(models.Order.status == "Cancelled")
+    )
+    failed_count = failed_res.scalar() or 0
+
+    # 5. COD Success Rate
+    # (Delivered COD) / (Total COD)
+    total_cod_res = await db.execute(
+        select(func.count(models.Order.id)).where(models.Order.payment_method == "COD")
+    )
+    total_cod = total_cod_res.scalar() or 1
+
+    delivered_cod_res = await db.execute(
+        select(func.count(models.Order.id))
+        .where(models.Order.payment_method == "COD")
+        .where(models.Order.status == "Delivered")
+    )
+    delivered_cod = delivered_cod_res.scalar() or 0
+
+    cod_success_rate = round((delivered_cod / total_cod) * 100, 1) if total_cod > 0 else 0.0
+
+    # 6. Transaction Table (Recent 20)
+    tx_query = await db.execute(
+        select(models.Order)
+        .options(selectinload(models.Order.user))
+        .order_by(desc(models.Order.created_at))
+        .limit(20)
+    )
+    transactions = tx_query.scalars().all()
+
+    tx_list = []
+    for t in transactions:
+        tx_list.append({
+            "id": f"TXN-{t.id}",
+            "user": t.user.full_name if t.user else "Guest",
+            "amount": t.total_amount,
+            "method": t.payment_method or "COD",
+            "status": "Success" if t.status == "Delivered" else ("Pending" if t.status == "Pending" else "Failed"),
+            "date": t.created_at.strftime("%b %d, %I:%M %p") if t.created_at else "N/A"
+        })
+
+    return {
+        "total_revenue": total_rev,
+        "cod_pending_money": cod_pending,
+        "upi_pending_orders_amt": upi_pending_orders_amt,
+        "refunds": 0.0,  # Placeholder until refund logic exists
+        "cod_success_rate": cod_success_rate,
+        "failed_payments": failed_count,
+        "transactions": tx_list
     }
 # 2. CUSTOMER LIST
 @router.get("/customers")
