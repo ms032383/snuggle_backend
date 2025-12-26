@@ -7,7 +7,7 @@ from typing import Optional
 # ⚠️ Production mein ye SECRET_KEY .env file mein honi chahiye!
 SECRET_KEY = "my_super_secret_key_change_this_later"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 43200
 
 # Password Hashing Setup
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")

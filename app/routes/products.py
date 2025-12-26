@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from requests import Session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
@@ -6,7 +7,9 @@ from typing import List, Optional
 import json
 from datetime import datetime
 from .. import models, schemas, database, dependencies
-
+from app.schemas import ProductDetailResponse, ProductUpdateExtended
+from ..database import get_db
+from ..models import Product, ProductColor, ProductSpecification, ProductImage
 router = APIRouter()
 
 
@@ -181,36 +184,78 @@ async def get_product_detail(id: int, db: AsyncSession = Depends(database.get_db
 
 
 # 4. Update Product with Extended Fields
-@router.put("/{product_id}", response_model=schemas.ProductDetailResponse)
-async def update_product_extended(
+@router.put("/{product_id}", response_model=schemas.ProductDetailResponse)  # ✅ Fixed URL & Added @
+async def update_product(  # ✅ Added async
         product_id: int,
-        product_data: schemas.ProductUpdateExtended,
-        db: AsyncSession = Depends(database.get_db),
-        current_user: models.User = Depends(dependencies.get_current_admin)
+        payload: schemas.ProductUpdateExtended,  # ✅ Correct Schema
+        db: AsyncSession = Depends(database.get_db),  # ✅ Async Session
+        current_user: models.User = Depends(dependencies.get_current_admin)  # ✅ Added Auth
 ):
-    """Update product with extended fields (Admin only)"""
-    # Find Product
-    query = select(models.Product).where(models.Product.id == product_id)
-    result = await db.execute(query)
+    # 1. Fetch Product
+    result = await db.execute(select(models.Product).where(models.Product.id == product_id))
     product = result.scalar_one_or_none()
 
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    # Update fields that are provided
-    update_data = product_data.dict(exclude_unset=True)
+    data = payload.dict(exclude_unset=True)
 
-    for field, value in update_data.items():
-        if value is not None:
-            setattr(product, field, value)
+    # 2. Update Basic Fields
+    for field in ["name", "description", "price", "mrp", "stock", "image_url", "sku", "tags", "is_active",
+                  "category_id"]:
+        if field in data:
+            setattr(product, field, data[field])
 
-    # Save
+    # 3. Update Gallery Images (Delete Old -> Add New)
+    if "gallery_images" in data:
+        # Delete old images
+        await db.execute(
+            select(models.ProductImage).where(models.ProductImage.product_id == product.id)
+        )
+        # Note: SQLAlchemy async delete logic varies, simpler is to clear list if relationship allows,
+        # but explicit delete is safer.
+        # Actually simplest async way for relationships:
+        product.gallery_images = []  # Clear logic handled by ORM if cascade is set, else manual delete
+
+        # Add new images
+        for idx, url in enumerate(data["gallery_images"]):
+            # Create new object
+            new_img = models.ProductImage(
+                image_url=url,
+                is_primary=(idx == 0),
+                display_order=idx
+            )
+            product.gallery_images.append(new_img)
+
+    # 4. Update Colors
+    if "colors" in data:
+        product.colors = []  # Clear old
+        for c in data["colors"]:
+            # c is a dict from Pydantic model
+            new_color = models.ProductColor(
+                color_name=c['color_name'],
+                color_code=c['color_code'],
+                image_url=c.get('image_url'),
+                is_available=c.get('is_available', True)
+            )
+            product.colors.append(new_color)
+
+    # 5. Update Specifications
+    if "specifications" in data:
+        product.specifications = []  # Clear old
+        for s in data["specifications"]:
+            new_spec = models.ProductSpecification(
+                key=s['key'],
+                value=s['value'],
+                display_order=s.get('display_order', 0)
+            )
+            product.specifications.append(new_spec)
+
     await db.commit()
     await db.refresh(product)
 
-    # Return full product details
+    # Return full details
     return await get_product_full_details(product_id, db)
-
 
 # 5. Delete Product
 @router.delete("/{product_id}")

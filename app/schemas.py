@@ -379,7 +379,6 @@ class ProductCreateExtended(ProductExtendedBase):
 
 # Product Update with extended fields
 class ProductUpdateExtended(BaseModel):
-    """Update product with extended fields"""
     name: Optional[str] = None
     description: Optional[str] = None
     price: Optional[float] = None
@@ -390,6 +389,13 @@ class ProductUpdateExtended(BaseModel):
     tags: Optional[str] = None
     is_active: Optional[bool] = None
     category_id: Optional[int] = None
+
+    # ✅ add these
+    gallery_images: Optional[List[str]] = None
+    colors: Optional[List[ProductColorBase]] = None
+    specifications: Optional[List[ProductSpecificationBase]] = None
+
+
 
 
 # Enhanced Product Response
