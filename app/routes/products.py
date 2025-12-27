@@ -126,7 +126,7 @@ async def get_products(
 ):
     """Get all products with enhanced filtering"""
     # Base Query
-    query = select(models.Product)
+    query = select(models.Product).where(models.Product.is_active == True)
 
     # Apply Filters
     if q:
