@@ -36,19 +36,25 @@ async def get_product_full_details(
     # Format reviews with user info
     formatted_reviews = []
     for review in product.reviews:
+        image_urls = json.loads(review.image_urls) if review.image_urls else []
+
         formatted_reviews.append(schemas.ProductReviewResponse(
             id=review.id,
             product_id=review.product_id,
             user_id=review.user_id,
             user_name=review.user.full_name if review.user else "Anonymous",
-            user_avatar=None,  # Add if you have user avatars
+            user_avatar=None,
             rating=review.rating,
             comment=review.comment,
             is_verified_purchase=review.is_verified_purchase,
             helpful_count=review.helpful_count,
-            created_at=review.created_at,
-            updated_at=review.updated_at,
-            image_urls=json.loads(review.image_urls) if review.image_urls else []
+            created_at=str(review.created_at),  # Safe string conversion
+            updated_at=str(review.updated_at),
+            image_urls=image_urls,
+
+            # ✅ FIX 1: Add Missing Fields (Schema requires these)
+            is_approved=review.is_approved,
+            is_featured=review.is_featured
         ))
 
     # Create response
@@ -63,74 +69,88 @@ async def get_product_full_details(
         category_id=product.category_id,
         is_active=product.is_active,
         sku=product.sku,
-        tags=product.tags,
+
+        # ✅ FIX 2: Handle NULL tags safely
+        tags=product.tags or [],
+
         average_rating=product.average_rating,
         review_count=product.review_count,
         wishlist_count=product.wishlist_count,
-        gallery_images=product.gallery_images,
-        colors=product.colors,
-        specifications=product.specifications,
+
+        # ✅ FIX 3: Extract URLs (Schema expects List[str])
+        gallery_images=[img.image_url for img in product.gallery_images],
+
+        colors=[{"color_name": c.color_name, "color_code": c.color_code, "image_url": c.image_url} for c in
+                product.colors],
+        specifications=[{"key": s.key, "value": s.value} for s in product.specifications],
         reviews=formatted_reviews
     )
 
     return response
 
-
 # 2. ADD PRODUCT REVIEW
-@router.post("/{product_id}/reviews", response_model=schemas.ProductReviewResponse)
-async def add_product_review(
+@router.get("/{product_id}/reviews", response_model=List[schemas.ProductReviewResponse])
+async def get_product_reviews(
         product_id: int,
-        review_data: schemas.ProductReviewCreate,
-        current_user: models.User = Depends(dependencies.get_current_user),
+        skip: int = 0,
+        limit: int = 10,
+        sort_by: str = "recent",  # recent, rating_high, rating_low
         db: AsyncSession = Depends(database.get_db)
 ):
-    """Add a review for a product"""
+    """Fetch reviews for a product with pagination and sorting"""
 
-    # Check if product exists
-    product_result = await db.execute(
-        select(models.Product).where(models.Product.id == product_id)
-    )
-    product = product_result.scalar_one_or_none()
+    # 1. Start Query
+    query = select(models.ProductReview).where(models.ProductReview.product_id == product_id)
 
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
+    # 2. Load User Relationship (Zaruri hai username ke liye)
+    query = query.options(selectinload(models.ProductReview.user))
 
-    # Check if user has already reviewed this product
-    existing_review = await db.execute(
-        select(models.ProductReview).where(
-            models.ProductReview.product_id == product_id,
-            models.ProductReview.user_id == current_user.id
-        )
-    )
+    # 3. Apply Sorting
+    if sort_by == "recent":
+        query = query.order_by(models.ProductReview.created_at.desc())
+    elif sort_by == "rating_high":
+        query = query.order_by(models.ProductReview.rating.desc())
+    elif sort_by == "rating_low":
+        query = query.order_by(models.ProductReview.rating.asc())
 
-    if existing_review.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="You have already reviewed this product")
+    # 4. Apply Pagination
+    query = query.offset(skip).limit(limit)
 
-    # Create review
-    new_review = models.ProductReview(
-        product_id=product_id,
-        user_id=current_user.id,
-        rating=review_data.rating,
-        comment=review_data.comment,
-        is_verified_purchase=review_data.is_verified_purchase,
-        image_urls=json.dumps(review_data.image_urls) if review_data.image_urls else None,
-        created_at=datetime.now().isoformat(),
-        updated_at=datetime.now().isoformat()
-    )
+    # 5. Execute Query
+    result = await db.execute(query)
+    reviews = result.scalars().all()
 
-    # Update product rating
-    total_reviews = product.review_count + 1
-    total_rating = (product.average_rating * product.review_count) + review_data.rating
-    new_average = total_rating / total_reviews
+    # 6. Format Response
+    formatted_reviews = []
+    for review in reviews:
+        # Handle Image URLs (JSON string to List)
+        image_urls = []
+        if review.image_urls:
+            try:
+                image_urls = json.loads(review.image_urls)
+            except:
+                image_urls = []
 
-    product.average_rating = round(new_average, 1)
-    product.review_count = total_reviews
+        formatted_reviews.append(schemas.ProductReviewResponse(
+            id=review.id,
+            product_id=review.product_id,
+            user_id=review.user_id,
+            user_name=review.user.full_name if review.user else "Anonymous",
+            user_avatar=None,
+            rating=review.rating,
+            comment=review.comment,
+            is_verified_purchase=review.is_verified_purchase,
+            helpful_count=review.helpful_count,
+            created_at=str(review.created_at),
+            updated_at=str(review.updated_at),
+            image_urls=image_urls,
 
-    db.add(new_review)
-    await db.commit()
-    await db.refresh(new_review)
+            # ✅ IMPORTANT FIX: These fields were missing causing 500 Error
+            is_approved=review.is_approved,
+            is_featured=review.is_featured
+        ))
 
-    return new_review
+    return formatted_reviews
 
 
 # 3. GET RECOMMENDED PRODUCTS

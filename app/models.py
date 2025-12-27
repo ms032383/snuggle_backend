@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, Text, ForeignKey, Date
+from sqlalchemy import Column, Integer, String, Float, Boolean, Text, ForeignKey, Date, ARRAY
 from sqlalchemy.orm import relationship
 from .database import Base
+
 
 
 # ============================
@@ -80,6 +81,7 @@ class Product(Base):
     colors = relationship("ProductColor", back_populates="product", cascade="all, delete-orphan")
     reviews = relationship("ProductReview", back_populates="product", cascade="all, delete-orphan")
     specifications = relationship("ProductSpecification", back_populates="product", cascade="all, delete-orphan")
+    tags = Column(ARRAY(String), default=[])
 
 
 # ============================
@@ -295,7 +297,9 @@ class ProductReview(Base):
     # Relationships
     product = relationship("Product", back_populates="reviews")
     user = relationship("User")
-
+    is_approved = Column(Boolean, default=False)
+    is_featured = Column(Boolean, default=False)  # For Homepage
+    reviewer_name = Column(String, nullable=True)  # For manual admin entry
 
 class ProductSpecification(Base):
     """Product specifications/features"""

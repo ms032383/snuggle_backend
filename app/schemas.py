@@ -331,14 +331,40 @@ class ProductReviewResponse(ProductReviewBase):
     product_id: int
     user_id: int
     user_name: Optional[str] = None
+    rating: int
+    comment: str
+    is_featured: bool
     user_avatar: Optional[str] = None
     is_verified_purchase: bool
     helpful_count: int
+    is_approved: bool
     created_at: str
     updated_at: str
+
     class Config:
         from_attributes = True
 
+
+class ReviewCreate(BaseModel):
+    product_id: int
+    rating: int
+    comment: str
+    reviewer_name: Optional[str] = None # Admin use karega
+
+
+class ReviewResponse(BaseModel):
+    id: int
+    product_id: int
+    product_name: str
+    user_name: str
+    rating: int
+    comment: str
+    is_approved: bool
+    is_featured: bool
+    created_at: str
+
+    class Config:
+        from_attributes = True
 
 # Product Specification Schemas
 class ProductSpecificationBase(BaseModel):
@@ -396,24 +422,42 @@ class ProductUpdateExtended(BaseModel):
     specifications: Optional[List[ProductSpecificationBase]] = None
 
 
+class ColorInfo(BaseModel):
+    color_name: str
+    color_code: str
+    image_url: Optional[str] = None
 
+class SpecInfo(BaseModel):
+    key: str
+    value: str
 
 # Enhanced Product Response
-class ProductDetailResponse(ProductResponse):
-    """Extended product response with all details"""
+class ProductDetailResponse(BaseModel):
+    id: int
+    name: str
+    description: str
+    price: float
     mrp: Optional[float] = None
-    sku: Optional[str] = None
-    tags: Optional[str] = None
+    stock: int
+    image_url: str
+    category_id: int
+    is_active: bool
+    sku: str
+    tags: List[str] = []
+
     average_rating: float = 0.0
     review_count: int = 0
     wishlist_count: int = 0
-    gallery_images: List[ProductImageResponse] = []
-    colors: List[ProductColorResponse] = []
-    specifications: List[ProductSpecificationResponse] = []
-    reviews: List[ProductReviewResponse] = []
+
+    # ✅ FIX: Changed from List[ProductImage] to List[str]
+    gallery_images: List[str] = []
+
+    colors: List[ColorInfo] = []
+    specifications: List[SpecInfo] = []
+    reviews: List[ProductReviewResponse] = []  # Ensure ReviewResponse is defined above
+
     class Config:
         from_attributes = True
-
 
 # Product Simple Response (for lists)
 class ProductSimpleResponse(BaseModel):
@@ -488,3 +532,22 @@ class BulkProductUpdate(BaseModel):
 
 class BulkProductDelete(BaseModel):
     product_ids: List[int]
+
+
+class CustomerDetailResponse(BaseModel):
+    id: int
+    full_name: str
+    email: str
+    phone: str | None
+    avatar_url: str | None
+
+    # Stats
+    total_orders: int
+    total_spent: float  # Lifetime Value (LTV)
+    avg_order_value: float
+    total_returns: int
+
+    # Data Lists
+    address: str | None  # Combined address string
+    orders: List[dict]  # Simplified order objects
+    reviews: List[ProductReviewResponse]  # Reviews by this user

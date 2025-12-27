@@ -5,6 +5,7 @@ from sqlalchemy import func, desc, case
 from sqlalchemy.orm import selectinload
 from datetime import datetime, timedelta
 from .. import models, schemas, database, dependencies
+from typing import List, Optional
 
 router = APIRouter()
 
@@ -237,3 +238,219 @@ async def get_all_customers(db: AsyncSession = Depends(database.get_db)):
         }
         for u in users
     ]
+
+
+@router.get("/customers/{user_id}")
+async def get_customer_details(
+        user_id: int,
+        db: AsyncSession = Depends(database.get_db)
+):
+    # 1. Fetch User
+    result = await db.execute(select(models.User).where(models.User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    # 2. Fetch Orders
+    orders_result = await db.execute(
+        select(models.Order).where(models.Order.user_id == user_id)
+    )
+    orders = orders_result.scalars().all()
+
+    # 3. 👇 NEW LOGIC: Status-wise Calculation
+    pending_statuses = ['Pending', 'Processing', 'Packed', 'Shipped']
+    completed_statuses = ['Delivered']
+
+    pending_count = 0
+    pending_value = 0.0
+
+    completed_count = 0
+    completed_value = 0.0  # Yehi apki Lifetime Value (LTV) hogi
+    cancelled_count = 0  # ✅ New Variable
+
+    total_returns = 0
+
+    for order in orders:
+        status = order.status  # Case sensitive check karna (DB mein 'Pending' ya 'pending' hai)
+
+        if status in pending_statuses:
+            pending_count += 1
+            pending_value += order.total_amount
+
+        elif status in completed_statuses:
+            completed_count += 1
+            completed_value += order.total_amount
+
+        elif status == 'Cancelled':  # ✅ Check for Cancelled
+            cancelled_count += 1
+
+        elif status == 'Returned':
+            total_returns += 1
+
+    # 4. Fetch Address
+    address_result = await db.execute(
+        select(models.Address).where(models.Address.user_id == user_id).limit(1)
+    )
+    address_obj = address_result.scalar_one_or_none()
+    address_str = f"{address_obj.street_address}, {address_obj.city}" if address_obj else "No Address"
+
+    # 5. Fetch Reviews
+    reviews_result = await db.execute(
+        select(models.ProductReview, models.Product.name)
+        .join(models.Product, models.ProductReview.product_id == models.Product.id)
+        .where(models.ProductReview.user_id == user_id)
+    )
+
+    reviews_list = []
+    for review, prod_name in reviews_result:
+        reviews_list.append({
+            "id": review.id,
+            "product_name": prod_name,
+            "rating": review.rating,
+            "comment": review.comment,
+            "is_approved": review.is_approved
+        })
+
+    orders_list = [
+        {"id": o.id, "total": o.total_amount, "status": o.status, "date": str(o.created_at).split(' ')[0]}
+        for o in orders
+    ]
+
+    # ✅ Return Modified Data
+    return {
+        "id": user.id,
+        "full_name": user.full_name or "Guest",
+        "email": user.email,
+        "phone": user.phone,
+
+        # New Stats Fields
+        "pending_orders_count": pending_count,
+        "pending_orders_value": pending_value,
+        "completed_orders_count": completed_count,
+        "lifetime_value": completed_value,  # Only completed orders
+        "cancelled_orders_count": cancelled_count,  # ✅ New Field Sent to Frontend
+        "total_returns": total_returns,
+        "avg_order_value": (completed_value / completed_count) if completed_count > 0 else 0.0,
+
+        "address": address_str,
+        "orders": orders_list,
+        "reviews": reviews_list
+    }
+
+
+# 2. TOGGLE REVIEW APPROVAL
+@router.patch("/reviews/{review_id}/approve")
+async def toggle_review_approval(
+        review_id: int,
+        db: AsyncSession = Depends(database.get_db)
+):
+    result = await db.execute(select(models.ProductReview).where(models.ProductReview.id == review_id))
+    review = result.scalar_one_or_none()
+
+    if not review:
+        raise HTTPException(status_code=404, detail="Review not found")
+
+    # Toggle status
+    review.is_approved = not review.is_approved
+    await db.commit()
+
+    return {"message": "Review status updated", "is_approved": review.is_approved}
+
+
+@router.get("/reviews/stats")
+async def get_review_stats(db: AsyncSession = Depends(database.get_db)):
+    # 1. Total Reviews
+    total = await db.execute(select(func.count(models.ProductReview.id)))
+    total_count = total.scalar() or 0
+
+    # 2. Avg Rating
+    avg = await db.execute(select(func.avg(models.ProductReview.rating)))
+    avg_rating = avg.scalar() or 0.0
+
+    # 3. Pending Moderation (Not Approved)
+    pending = await db.execute(
+        select(func.count(models.ProductReview.id)).where(models.ProductReview.is_approved == False))
+    pending_count = pending.scalar() or 0
+
+    # 4. Featured Count
+    featured = await db.execute(
+        select(func.count(models.ProductReview.id)).where(models.ProductReview.is_featured == True))
+    featured_count = featured.scalar() or 0
+
+    return {
+        "total_reviews": total_count,
+        "avg_rating": round(avg_rating, 1),
+        "pending_moderation": pending_count,
+        "featured_reviews": featured_count
+    }
+
+
+@router.get("/reviews", response_model=List[schemas.ReviewResponse])
+async def get_all_reviews(
+        page: int = 1,
+        limit: int = 20,
+        status: str = "all",  # all, pending, featured
+        db: AsyncSession = Depends(database.get_db)
+):
+    query = select(models.ProductReview, models.Product.name, models.User.full_name) \
+        .join(models.Product, models.ProductReview.product_id == models.Product.id) \
+        .outerjoin(models.User, models.ProductReview.user_id == models.User.id) \
+        .order_by(models.ProductReview.created_at.desc())
+
+    if status == "pending":
+        query = query.where(models.ProductReview.is_approved == False)
+    elif status == "featured":
+        query = query.where(models.ProductReview.is_featured == True)
+
+    query = query.offset((page - 1) * limit).limit(limit)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    return [
+        {
+            "id": r.ProductReview.id,
+            "product_id": r.ProductReview.product_id,
+            "product_name": r.name,
+            "user_name": r.ProductReview.reviewer_name or r.full_name or "Guest",
+            "rating": r.ProductReview.rating,
+            "comment": r.ProductReview.comment,
+            "is_approved": r.ProductReview.is_approved,
+            "is_featured": r.ProductReview.is_featured,
+            "created_at": str(r.ProductReview.created_at)
+        }
+        for r in rows
+    ]
+
+
+# Actions: Feature Review
+@router.patch("/reviews/{review_id}/feature")
+async def toggle_feature_review(review_id: int, db: AsyncSession = Depends(database.get_db)):
+    result = await db.execute(select(models.ProductReview).where(models.ProductReview.id == review_id))
+    review = result.scalar_one_or_none()
+    if not review: raise HTTPException(status_code=404, detail="Not found")
+
+    review.is_featured = not review.is_featured
+    await db.commit()
+    return {"status": "success", "is_featured": review.is_featured}
+
+
+# Manual Review Add (Admin)
+@router.post("/reviews/manual")
+async def admin_add_review(
+        review: schemas.ReviewCreate,
+        current_user: models.User = Depends(dependencies.get_current_admin),
+        db: AsyncSession = Depends(database.get_db)
+):
+    new_review = models.ProductReview(
+        product_id=review.product_id,
+        user_id=current_user.id,  # Assigned to admin account but custom name
+        rating=review.rating,
+        comment=review.comment,
+        reviewer_name=review.reviewer_name,
+        is_approved=True,  # Admin added, so auto-approved
+        is_featured=False
+    )
+    db.add(new_review)
+    await db.commit()
+    return {"message": "Review added successfully"}
