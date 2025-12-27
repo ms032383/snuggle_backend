@@ -19,6 +19,7 @@ class UserResponse(BaseModel):
     email: str
     full_name: Optional[str] = None
     phone: Optional[str] = None
+    avatar_url: Optional[str] = None 
     gender: Optional[str] = None
     date_of_birth: Optional[date] = None
     is_active: bool
@@ -166,6 +167,7 @@ class BannerResponse(BannerBase):
 class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     phone: Optional[str] = None
+    avatar_url: Optional[str] = None 
     gender: Optional[str] = None
     date_of_birth: Optional[date] = None
 

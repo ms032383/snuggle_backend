@@ -4,7 +4,8 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from typing import List
 from .. import models, schemas, database, dependencies,utils
-
+from fastapi import UploadFile, File
+import cloudinary.uploader
 router = APIRouter()
 
 # 1. GET PROFILE
@@ -126,3 +127,31 @@ async def change_password(
     await db.commit()
 
     return {"message": "Password updated successfully"}
+
+@router.post("/profile/avatar")
+async def upload_profile_avatar(
+    file: UploadFile = File(...),
+    current_user: models.User = Depends(dependencies.get_current_user),
+    db: AsyncSession = Depends(database.get_db)
+):
+    try:
+        # 1) Upload to Cloudinary
+        res = cloudinary.uploader.upload(
+            file.file,
+            folder="snuggle_avatars",
+            resource_type="image"
+        )
+
+        url = res.get("secure_url")
+        if not url:
+            raise HTTPException(status_code=500, detail="Cloudinary did not return url")
+
+        # 2) Save URL in DB
+        current_user.avatar_url = url
+        await db.commit()
+        await db.refresh(current_user)
+
+        return {"message": "Avatar updated", "avatar_url": url}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

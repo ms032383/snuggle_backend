@@ -15,6 +15,8 @@ class User(Base):
 
     full_name = Column(String, nullable=True)
     phone = Column(String, nullable=True)
+    
+    avatar_url = Column(String, nullable=True) 
 
     
     gender = Column(String, nullable=True)          # e.g. "male" | "female" | "other" | "prefer_not_to_say"
