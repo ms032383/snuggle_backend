@@ -10,7 +10,7 @@ from .database import engine, Base, AsyncSessionLocal, get_db
 from .routes import products, auth, cart, address, orders, payment, home, upload, user, admin, marketing,product_enhanced,reviews
 from .init_db import init_super_admin
 from . import models
-
+from .routes import  reviews, email
 
 # 👇 LIFESPAN MANAGER (Runs on Startup)
 @asynccontextmanager
@@ -56,7 +56,7 @@ app.include_router(marketing.router, prefix="/api/admin/marketing", tags=["Marke
 app.include_router(addons.router, prefix="/api/addons", tags=["Add-ons"])
 app.include_router(product_enhanced.router, prefix="/api/products", tags=["Product Enhanced"])
 app.include_router(reviews.router, prefix="/api/reviews", tags=["Public Reviews"])
-
+app.include_router(email.router, prefix="/api/email", tags=["Email"])
 
 @app.get("/")
 def root():
