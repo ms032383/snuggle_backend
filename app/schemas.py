@@ -62,6 +62,10 @@ class ProductCreate(ProductBase):
 class ProductResponse(ProductBase):
     id: int
     is_active: bool
+
+    average_rating: float = 0.0
+    review_count: int = 0
+    mrp: Optional[float] = None
     class Config:
         from_attributes = True
 
