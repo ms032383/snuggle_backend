@@ -11,7 +11,7 @@ from .routes import products, auth, cart, address, orders, payment, home, upload
 from .init_db import init_super_admin
 from . import models
 from .routes import  reviews, email
-
+from app.routes.chatbot import router as chatbot_router
 # 👇 LIFESPAN MANAGER (Runs on Startup)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -57,7 +57,7 @@ app.include_router(addons.router, prefix="/api/addons", tags=["Add-ons"])
 app.include_router(product_enhanced.router, prefix="/api/products", tags=["Product Enhanced"])
 app.include_router(reviews.router, prefix="/api/reviews", tags=["Public Reviews"])
 app.include_router(email.router, prefix="/api/email", tags=["Email"])
-
+app.include_router(chatbot_router)
 @app.get("/")
 def root():
     return {"message": "Snuggle API is Running 🚀"}
