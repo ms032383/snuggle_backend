@@ -5,88 +5,23 @@ from sqlalchemy.orm import selectinload
 from typing import List, Optional
 import json
 from datetime import datetime
+
+from .products import get_product_full_details
 from .. import models, schemas, database, dependencies
 
 router = APIRouter()
 
 
 # 1. GET PRODUCT WITH ALL DETAILS
+# 1. GET PRODUCT WITH ALL DETAILS
 @router.get("/{product_id}/full", response_model=schemas.ProductDetailResponse)
-async def get_product_full_details(
+async def get_product_full_details_route(
         product_id: int,
         db: AsyncSession = Depends(database.get_db)
 ):
-    """Get product with all related data (images, colors, reviews, etc.)"""
-
-    # Query with all relationships
-    query = select(models.Product).where(models.Product.id == product_id).options(
-        selectinload(models.Product.gallery_images),
-        selectinload(models.Product.colors),
-        selectinload(models.Product.specifications),
-        selectinload(models.Product.reviews).selectinload(models.ProductReview.user),
-        selectinload(models.Product.category)
-    )
-
-    result = await db.execute(query)
-    product = result.scalar_one_or_none()
-
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-
-    # Format reviews with user info
-    formatted_reviews = []
-    for review in product.reviews:
-        image_urls = json.loads(review.image_urls) if review.image_urls else []
-
-        formatted_reviews.append(schemas.ProductReviewResponse(
-            id=review.id,
-            product_id=review.product_id,
-            user_id=review.user_id,
-            user_name=review.user.full_name if review.user else "Anonymous",
-            user_avatar=None,
-            rating=review.rating,
-            comment=review.comment,
-            is_verified_purchase=review.is_verified_purchase,
-            helpful_count=review.helpful_count,
-            created_at=str(review.created_at),  # Safe string conversion
-            updated_at=str(review.updated_at),
-            image_urls=image_urls,
-
-            # ✅ FIX 1: Add Missing Fields (Schema requires these)
-            is_approved=review.is_approved,
-            is_featured=review.is_featured
-        ))
-
-    # Create response
-    response = schemas.ProductDetailResponse(
-        id=product.id,
-        name=product.name,
-        description=product.description,
-        price=product.price,
-        mrp=product.mrp,
-        stock=product.stock,
-        image_url=product.image_url,
-        category_id=product.category_id,
-        is_active=product.is_active,
-        sku=product.sku,
-
-        # ✅ FIX 2: Handle NULL tags safely
-        tags=product.tags or [],
-
-        average_rating=product.average_rating,
-        review_count=product.review_count,
-        wishlist_count=product.wishlist_count,
-
-        # ✅ FIX 3: Extract URLs (Schema expects List[str])
-        gallery_images=[img.image_url for img in product.gallery_images],
-
-        colors=[{"color_name": c.color_name, "color_code": c.color_code, "image_url": c.image_url} for c in
-                product.colors],
-        specifications=[{"key": s.key, "value": s.value} for s in product.specifications],
-        reviews=formatted_reviews
-    )
-
-    return response
+    """Get product with all related data - Calls the helper function"""
+    # Direct niche wala fixed helper function call karo
+    return await get_product_full_details(product_id, db)
 
 # 2. ADD PRODUCT REVIEW
 @router.get("/{product_id}/reviews", response_model=List[schemas.ProductReviewResponse])

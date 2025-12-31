@@ -1,6 +1,7 @@
 from pydantic import BaseModel, EmailStr, validator, Field
 from typing import Optional, List
 from datetime import date
+from datetime import datetime
 
 # ==============================
 # 1. AUTH & USER SCHEMAS
@@ -19,7 +20,7 @@ class UserResponse(BaseModel):
     email: str
     full_name: Optional[str] = None
     phone: Optional[str] = None
-    avatar_url: Optional[str] = None 
+    avatar_url: Optional[str] = None
     gender: Optional[str] = None
     date_of_birth: Optional[date] = None
     is_active: bool
@@ -167,7 +168,7 @@ class BannerResponse(BannerBase):
 class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     phone: Optional[str] = None
-    avatar_url: Optional[str] = None 
+    avatar_url: Optional[str] = None
     gender: Optional[str] = None
     date_of_birth: Optional[date] = None
 
@@ -391,14 +392,23 @@ class ProductSpecificationResponse(ProductSpecificationBase):
 class ProductExtendedBase(BaseModel):
     name: str
     description: Optional[str] = None
-    price: float
+
+    # Pricing Fields
+    cost_price: Optional[float] = None
+    selling_price: float
+    tax_percentage: Optional[float] = 18.0
     mrp: Optional[float] = None
+
+    # Other fields
     stock: int = 10
     image_url: Optional[str] = None
     category_id: int
     sku: Optional[str] = None
     tags: Optional[str] = None
     is_active: bool = True
+
+    # Remove the old 'price' field or make it optional
+    price: Optional[float] = None  # For backward compatibility
 
 
 # Product Create with extended fields
@@ -442,6 +452,16 @@ class ProductDetailResponse(BaseModel):
     id: int
     name: str
     description: str
+
+    cost_price: Optional[float] = None
+    selling_price: float
+    tax_percentage: float = 18.0
+    base_price: Optional[float] = None
+    tax_amount: Optional[float] = None
+    profit_amount: Optional[float] = None
+    profit_margin: Optional[float] = None
+    final_price: float  # Same as selling_price for backward compatibility
+
     price: float
     mrp: Optional[float] = None
     stock: int
@@ -557,3 +577,108 @@ class CustomerDetailResponse(BaseModel):
     address: str | None  # Combined address string
     orders: List[dict]  # Simplified order objects
     reviews: List[ProductReviewResponse]  # Reviews by this user
+
+
+class StoreSettingResponse(BaseModel):
+    id: int
+    hero_image_url: Optional[str] = None
+    trending_title: str
+
+    badge1_title: str
+    badge1_desc: str
+    badge2_title: str
+    badge2_desc: str
+    badge3_title: str
+    badge3_desc: str
+
+    shop_hero_image_url: Optional[str] = None
+    our_story_image_url: Optional[str] = None
+    contact_image_url: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+class StoreSettingsCreate(BaseModel):
+    store_name: str
+    address: str
+    phone: str
+    email: str
+    gstin: str
+
+class StoreSettingsResponse(StoreSettingsCreate):
+    id: int
+    updated_at: datetime
+
+    class Config:
+        orm_mode = True
+
+
+class ProductCostBase(BaseModel):
+    cost_price: Optional[float] = None  # Actual cost
+    selling_price: float  # Final price (with tax included)
+    tax_percentage: Optional[float] = 18.0  # GST/VAT %
+    mrp: Optional[float] = None  # Max Retail Price
+
+
+
+
+
+
+class ProductUpdateExtended(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    cost_price: Optional[float] = None
+    selling_price: Optional[float] = None
+    tax_percentage: Optional[float] = None
+    mrp: Optional[float] = None
+    stock: Optional[int] = None
+    image_url: Optional[str] = None
+    sku: Optional[str] = None
+    tags: Optional[str] = None
+    is_active: Optional[bool] = None
+    category_id: Optional[int] = None
+
+    gallery_images: Optional[List[str]] = None
+    colors: Optional[List[ProductColorBase]] = None
+    specifications: Optional[List[ProductSpecificationBase]] = None
+
+
+# Update ProductDetailResponse
+class ProductDetailResponse(BaseModel):
+    id: int
+    name: str
+    description: str
+
+    # Pricing Fields (Ye fields red lines hata denge)
+    cost_price: Optional[float] = None
+    selling_price: float
+    tax_percentage: float = 18.0
+    mrp: Optional[float] = None
+
+    # Calculated Fields
+    base_price: Optional[float] = None
+    tax_amount: Optional[float] = None
+    profit_amount: Optional[float] = None
+    profit_margin: Optional[float] = None
+    final_price: float
+
+    # Other Fields
+    stock: int
+    image_url: str
+    category_id: int
+    is_active: bool
+    sku: str
+    tags: List[str] = []
+
+    average_rating: float = 0.0
+    review_count: int = 0
+    wishlist_count: int = 0
+    wishlist_count: int = 0
+
+    gallery_images: List[str] = []
+    colors: List[ColorInfo] = []            # Ensure ColorInfo defined hai upar
+    specifications: List[SpecInfo] = []     # Ensure SpecInfo defined hai upar
+    reviews: List[ProductReviewResponse] = [] # Ensure ProductReviewResponse defined hai
+
+    class Config:
+        from_attributes = True

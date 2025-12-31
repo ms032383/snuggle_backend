@@ -6,6 +6,7 @@ from sqlalchemy.orm import selectinload
 from datetime import datetime, timedelta
 from .. import models, schemas, database, dependencies
 from typing import List, Optional
+import json
 
 router = APIRouter()
 
@@ -57,12 +58,11 @@ async def get_analytics(
             "status": o.status
         })
 
-    # 6. Revenue Trend (Last 7 Days)
+    # 6. Revenue Trend (Last 7 Days) - ✅ DEBUGGING MODE
     today = datetime.now().date()
-    # Initialize map with 0.0 for last 7 days
     trend_map = {(today - timedelta(days=i)).isoformat(): 0.0 for i in range(6, -1, -1)}
 
-    # Fetch delivered orders for trend
+    # Fetch delivered orders
     trend_data = await db.execute(
         select(models.Order)
         .where(models.Order.status == "Delivered")
@@ -70,20 +70,26 @@ async def get_analytics(
     delivered_orders = trend_data.scalars().all()
 
     for order in delivered_orders:
-        if order.created_at:
-            try:
-                # ✅ FIX: Handle String vs DateTime safely
-                if isinstance(order.created_at, str):
-                    # "2025-12-26 14:30:00" -> "2025-12-26"
-                    o_date = order.created_at.split(' ')[0]
-                else:
-                    # DateTime object
-                    o_date = order.created_at.date().isoformat()
+        if not order.created_at:
+            continue
 
-                if o_date in trend_map:
-                    trend_map[o_date] += (order.total_amount or 0)
-            except Exception as e:
-                print(f"Skipping trend for Order #{order.id}: {e}")
+        try:
+            o_date = None
+            date_str = str(order.created_at).strip()
+
+            # Case 1: Agar date "now" hai (Purana Data)
+            if date_str.lower() == "now":
+                o_date = today.isoformat()
+
+            # Case 2: Agar standard date string hai
+            elif len(date_str) >= 10:
+                o_date = date_str[:10]
+
+            if o_date and o_date in trend_map:
+                trend_map[o_date] += (order.total_amount or 0)
+
+        except Exception as e:
+            print(f"Skipping trend calculation for Order #{order.id}: {e}")
 
     # 7. Payment & Delivery Splits
     all_orders_res = await db.execute(select(models.Order))
@@ -93,7 +99,6 @@ async def get_analytics(
     delivery_counts = {"Delivered": 0, "In Transit": 0, "RTO": 0}
 
     for order in all_orders:
-        # Payment Split
         method = (order.payment_method or "COD").upper()
         if "UPI" in method:
             payment_counts["UPI"] += 1
@@ -102,7 +107,6 @@ async def get_analytics(
         else:
             payment_counts["COD"] += 1
 
-        # Delivery Split
         status = order.status or "Pending"
         if status == "Delivered":
             delivery_counts["Delivered"] += 1
@@ -115,6 +119,26 @@ async def get_analytics(
 
     total_count = len(all_orders) if len(all_orders) > 0 else 1
 
+    # 8. Dynamic Category Split
+    cat_query = await db.execute(
+        select(models.Category.name, func.sum(models.OrderItem.quantity))
+        .join(models.Product, models.OrderItem.product_id == models.Product.id)
+        .join(models.Category, models.Product.category_id == models.Category.id)
+        .group_by(models.Category.name)
+    )
+    cat_results = cat_query.all()
+
+    category_split = {}
+    total_items_sold = sum((qty or 0) for _, qty in cat_results) if cat_results else 0
+
+    if total_items_sold > 0:
+        for name, qty in cat_results:
+            if qty and qty > 0:
+                percentage = (qty / total_items_sold) * 100
+                category_split[name] = round(percentage, 1)
+    else:
+        category_split = {"No Sales Yet": 100}
+
     return {
         "totalRevenue": total_revenue,
         "totalOrders": total_orders,
@@ -126,8 +150,8 @@ async def get_analytics(
         "revenueTrend": list(trend_map.values()),
         "paymentSplit": {k: round((v / total_count) * 100) for k, v in payment_counts.items()},
         "deliveryStatus": {k: round((v / total_count) * 100) for k, v in delivery_counts.items()},
-        "alerts": [],  # Add alert logic if needed
-        "categorySplit": {"Couple Sets": 40, "Gifts": 60}
+        "alerts": [],
+        "categorySplit": category_split
     }
 
 
@@ -136,7 +160,7 @@ async def get_analytics(
 # =================================================================
 @router.get("/analytics/payments")
 async def get_payment_analytics(db: AsyncSession = Depends(database.get_db)):
-    # 1. COD Pending Money (Method=COD AND Status NOT Delivered/Cancelled)
+    # 1. COD Pending Money
     cod_pending_res = await db.execute(
         select(func.sum(models.Order.total_amount))
         .where(models.Order.payment_method == "COD")
@@ -144,7 +168,7 @@ async def get_payment_analytics(db: AsyncSession = Depends(database.get_db)):
     )
     cod_pending = cod_pending_res.scalar() or 0.0
 
-    # 2. UPI Pending Orders (Money received but product not delivered)
+    # 2. UPI Pending Orders
     upi_pending_order_res = await db.execute(
         select(func.sum(models.Order.total_amount))
         .where(models.Order.payment_method.ilike("%UPI%"))
@@ -152,13 +176,13 @@ async def get_payment_analytics(db: AsyncSession = Depends(database.get_db)):
     )
     upi_pending_orders_amt = upi_pending_order_res.scalar() or 0.0
 
-    # 3. Total Received (Only Delivered Orders)
+    # 3. Total Received
     total_rev_res = await db.execute(
         select(func.sum(models.Order.total_amount)).where(models.Order.status == "Delivered")
     )
     total_rev = total_rev_res.scalar() or 0.0
 
-    # 4. Failed Payments (Cancelled Orders)
+    # 4. Failed Payments
     failed_res = await db.execute(
         select(func.count(models.Order.id)).where(models.Order.status == "Cancelled")
     )
@@ -190,13 +214,9 @@ async def get_payment_analytics(db: AsyncSession = Depends(database.get_db)):
 
     tx_list = []
     for t in transactions:
-        # Date formatting logic same as above
         date_str = "N/A"
         if t.created_at:
-            if isinstance(t.created_at, str):
-                date_str = t.created_at  # Already string
-            else:
-                date_str = t.created_at.strftime("%b %d, %I:%M %p")
+            date_str = str(t.created_at)
 
         tx_list.append({
             "id": f"TXN-{t.id}",
@@ -219,7 +239,7 @@ async def get_payment_analytics(db: AsyncSession = Depends(database.get_db)):
 
 
 # =================================================================
-# 3. CUSTOMER LIST
+# 3. CUSTOMER LIST & DETAILS (Ye part miss ho gaya tha shayad)
 # =================================================================
 @router.get("/customers")
 async def get_all_customers(db: AsyncSession = Depends(database.get_db)):
@@ -232,8 +252,8 @@ async def get_all_customers(db: AsyncSession = Depends(database.get_db)):
             "name": u.full_name or "Guest",
             "email": u.email,
             "phone": u.phone or "N/A",
-            "totalOrders": 0,  # Logic can be added later
-            "totalSpent": 0,  # Logic can be added later
+            "totalOrders": 0,  # Logic can be enhanced
+            "totalSpent": 0,
             "status": "Active" if u.is_active else "Blocked"
         }
         for u in users
@@ -257,33 +277,27 @@ async def get_customer_details(
     )
     orders = orders_result.scalars().all()
 
-    # 3. 👇 NEW LOGIC: Status-wise Calculation
+    # 3. Status Stats
     pending_statuses = ['Pending', 'Processing', 'Packed', 'Shipped']
     completed_statuses = ['Delivered']
 
     pending_count = 0
     pending_value = 0.0
-
     completed_count = 0
-    completed_value = 0.0  # Yehi apki Lifetime Value (LTV) hogi
-    cancelled_count = 0  # ✅ New Variable
-
+    completed_value = 0.0
+    cancelled_count = 0
     total_returns = 0
 
     for order in orders:
-        status = order.status  # Case sensitive check karna (DB mein 'Pending' ya 'pending' hai)
-
+        status = order.status
         if status in pending_statuses:
             pending_count += 1
             pending_value += order.total_amount
-
         elif status in completed_statuses:
             completed_count += 1
             completed_value += order.total_amount
-
-        elif status == 'Cancelled':  # ✅ Check for Cancelled
+        elif status == 'Cancelled':
             cancelled_count += 1
-
         elif status == 'Returned':
             total_returns += 1
 
@@ -316,29 +330,27 @@ async def get_customer_details(
         for o in orders
     ]
 
-    # ✅ Return Modified Data
     return {
         "id": user.id,
         "full_name": user.full_name or "Guest",
         "email": user.email,
         "phone": user.phone,
-
-        # New Stats Fields
         "pending_orders_count": pending_count,
         "pending_orders_value": pending_value,
         "completed_orders_count": completed_count,
-        "lifetime_value": completed_value,  # Only completed orders
-        "cancelled_orders_count": cancelled_count,  # ✅ New Field Sent to Frontend
+        "lifetime_value": completed_value,
+        "cancelled_orders_count": cancelled_count,
         "total_returns": total_returns,
         "avg_order_value": (completed_value / completed_count) if completed_count > 0 else 0.0,
-
         "address": address_str,
         "orders": orders_list,
         "reviews": reviews_list
     }
 
 
-# 2. TOGGLE REVIEW APPROVAL
+# =================================================================
+# 4. REVIEW MODERATION ACTIONS
+# =================================================================
 @router.patch("/reviews/{review_id}/approve")
 async def toggle_review_approval(
         review_id: int,
@@ -350,38 +362,25 @@ async def toggle_review_approval(
     if not review:
         raise HTTPException(status_code=404, detail="Review not found")
 
-    # Toggle status
     review.is_approved = not review.is_approved
     await db.commit()
-
     return {"message": "Review status updated", "is_approved": review.is_approved}
 
 
 @router.get("/reviews/stats")
 async def get_review_stats(db: AsyncSession = Depends(database.get_db)):
-    # 1. Total Reviews
     total = await db.execute(select(func.count(models.ProductReview.id)))
-    total_count = total.scalar() or 0
-
-    # 2. Avg Rating
     avg = await db.execute(select(func.avg(models.ProductReview.rating)))
-    avg_rating = avg.scalar() or 0.0
-
-    # 3. Pending Moderation (Not Approved)
     pending = await db.execute(
         select(func.count(models.ProductReview.id)).where(models.ProductReview.is_approved == False))
-    pending_count = pending.scalar() or 0
-
-    # 4. Featured Count
     featured = await db.execute(
         select(func.count(models.ProductReview.id)).where(models.ProductReview.is_featured == True))
-    featured_count = featured.scalar() or 0
 
     return {
-        "total_reviews": total_count,
-        "avg_rating": round(avg_rating, 1),
-        "pending_moderation": pending_count,
-        "featured_reviews": featured_count
+        "total_reviews": total.scalar() or 0,
+        "avg_rating": round(avg.scalar() or 0.0, 1),
+        "pending_moderation": pending.scalar() or 0,
+        "featured_reviews": featured.scalar() or 0
     }
 
 
@@ -389,7 +388,7 @@ async def get_review_stats(db: AsyncSession = Depends(database.get_db)):
 async def get_all_reviews(
         page: int = 1,
         limit: int = 20,
-        status: str = "all",  # all, pending, featured
+        status: str = "all",
         db: AsyncSession = Depends(database.get_db)
 ):
     query = select(models.ProductReview, models.Product.name, models.User.full_name) \
@@ -423,7 +422,6 @@ async def get_all_reviews(
     ]
 
 
-# Actions: Feature Review
 @router.patch("/reviews/{review_id}/feature")
 async def toggle_feature_review(review_id: int, db: AsyncSession = Depends(database.get_db)):
     result = await db.execute(select(models.ProductReview).where(models.ProductReview.id == review_id))
@@ -435,7 +433,6 @@ async def toggle_feature_review(review_id: int, db: AsyncSession = Depends(datab
     return {"status": "success", "is_featured": review.is_featured}
 
 
-# Manual Review Add (Admin)
 @router.post("/reviews/manual")
 async def admin_add_review(
         review: schemas.ReviewCreate,
@@ -444,13 +441,59 @@ async def admin_add_review(
 ):
     new_review = models.ProductReview(
         product_id=review.product_id,
-        user_id=current_user.id,  # Assigned to admin account but custom name
+        user_id=current_user.id,
         rating=review.rating,
         comment=review.comment,
         reviewer_name=review.reviewer_name,
-        is_approved=True,  # Admin added, so auto-approved
+        is_approved=True,
         is_featured=False
     )
     db.add(new_review)
     await db.commit()
     return {"message": "Review added successfully"}
+
+
+# =================================================================
+# 5. STORE SETTINGS API (New)
+# =================================================================
+
+@router.get("/store-settings", response_model=schemas.StoreSettingsResponse)
+async def get_store_settings(
+        db: AsyncSession = Depends(database.get_db),
+        current_user: models.User = Depends(dependencies.get_current_admin)
+):
+    """Get store business settings"""
+    result = await db.execute(select(models.StoreSettings))
+    settings = result.scalars().first()
+
+    if not settings:
+        settings = models.StoreSettings()
+        db.add(settings)
+        await db.commit()
+        await db.refresh(settings)
+
+    return settings
+
+
+@router.put("/store-settings", response_model=schemas.StoreSettingsResponse)
+async def update_store_settings(
+        settings_data: schemas.StoreSettingsCreate,
+        db: AsyncSession = Depends(database.get_db),
+        current_user: models.User = Depends(dependencies.get_current_admin)
+):
+    """Update store business settings"""
+    result = await db.execute(select(models.StoreSettings))
+    settings = result.scalars().first()
+
+    if not settings:
+        settings = models.StoreSettings(**settings_data.dict())
+        db.add(settings)
+    else:
+        for field, value in settings_data.dict().items():
+            if value is not None:
+                setattr(settings, field, value)
+        settings.updated_at = datetime.utcnow()
+
+    await db.commit()
+    await db.refresh(settings)
+    return settings

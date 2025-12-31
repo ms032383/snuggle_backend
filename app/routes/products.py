@@ -7,6 +7,7 @@ from typing import List, Optional
 import json
 from datetime import datetime
 from .. import models, schemas, database, dependencies
+from sqlalchemy import delete
 from app.schemas import ProductDetailResponse, ProductUpdateExtended
 from ..database import get_db
 from ..models import Product, ProductColor, ProductSpecification, ProductImage
@@ -52,8 +53,36 @@ async def create_product_extended(
     if not cat_result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Category ID not found")
 
+    # ✅ CALCULATE DERIVED FIELDS
+    # Get values from request
+    cost_price = product.cost_price or 0.0
+    selling_price = product.selling_price if hasattr(product, 'selling_price') else product.price
+    tax_percentage = product.tax_percentage if hasattr(product, 'tax_percentage') else 18.0
+
+    # Calculate base price (price without tax)
+    base_price = selling_price / (1 + (tax_percentage / 100))
+
+    # Calculate tax amount
+    tax_amount = selling_price - base_price
+
+    # Calculate profit
+    profit_amount = base_price - cost_price if cost_price else 0
+    profit_margin = (profit_amount / cost_price * 100) if cost_price > 0 else 0
+
     # Create main product
     product_data = product.dict()
+
+    # ✅ SET CALCULATED FIELDS
+    product_data['price'] = selling_price  # For backward compatibility
+    product_data['profit_amount'] = round(profit_amount, 2)
+    product_data['profit_margin'] = round(profit_margin, 2)
+
+    # ✅ Ensure required fields
+    if 'selling_price' not in product_data and 'price' in product_data:
+        product_data['selling_price'] = product_data['price']
+
+    if 'tax_percentage' not in product_data:
+        product_data['tax_percentage'] = 18.0
 
     # Remove nested data for main product creation
     gallery_images = product_data.pop('gallery_images', [])
@@ -62,7 +91,7 @@ async def create_product_extended(
 
     # Set default MRP if not provided
     if not product_data.get('mrp'):
-        product_data['mrp'] = product_data['price'] * 1.5  # 50% markup
+        product_data['mrp'] = product_data['selling_price'] * 1.5  # 50% markup
 
     # Set SKU if not provided
     if not product_data.get('sku'):
@@ -109,7 +138,6 @@ async def create_product_extended(
     # Return full product details
     return await get_product_full_details(new_product.id, db)
 
-
 # 2. Get All Products with Enhanced Filtering
 @router.get("/", response_model=List[schemas.ProductResponse])
 async def get_products(
@@ -122,11 +150,18 @@ async def get_products(
         in_stock: Optional[bool] = None,  # Stock Filter
         sort: Optional[str] = None,  # Sorting
         skip: int = 0,  # Pagination
-        limit: int = 20  # Items per page
+        limit: int = 20,  # Items per page
+        # ✅ NEW PARAMETER: Default False (Shop Mode)
+        admin_view: bool = False
 ):
     """Get all products with enhanced filtering"""
-    # Base Query
-    query = select(models.Product).where(models.Product.is_active == True)
+
+    # ✅ FIX: Base Query - Start with ALL products
+    query = select(models.Product)
+
+    # ✅ LOGIC: If NOT admin view, only show active products (Shop Mode)
+    if not admin_view:
+        query = query.where(models.Product.is_active == True)
 
     # Apply Filters
     if q:
@@ -175,7 +210,6 @@ async def get_products(
     result = await db.execute(query)
     return result.scalars().all()
 
-
 # 3. Get Single Product with Full Details
 @router.get("/{id}", response_model=schemas.ProductDetailResponse)
 async def get_product_detail(id: int, db: AsyncSession = Depends(database.get_db)):
@@ -184,12 +218,12 @@ async def get_product_detail(id: int, db: AsyncSession = Depends(database.get_db
 
 
 # 4. Update Product with Extended Fields
-@router.put("/{product_id}", response_model=schemas.ProductDetailResponse)  # ✅ Fixed URL & Added @
-async def update_product(  # ✅ Added async
+@router.put("/{product_id}", response_model=schemas.ProductDetailResponse)
+async def update_product(
         product_id: int,
-        payload: schemas.ProductUpdateExtended,  # ✅ Correct Schema
-        db: AsyncSession = Depends(database.get_db),  # ✅ Async Session
-        current_user: models.User = Depends(dependencies.get_current_admin)  # ✅ Added Auth
+        payload: schemas.ProductUpdateExtended,
+        db: AsyncSession = Depends(database.get_db),
+        current_user: models.User = Depends(dependencies.get_current_admin)
 ):
     # 1. Fetch Product
     result = await db.execute(select(models.Product).where(models.Product.id == product_id))
@@ -201,58 +235,59 @@ async def update_product(  # ✅ Added async
     data = payload.dict(exclude_unset=True)
 
     # 2. Update Basic Fields
+    # Only update fields that are actually present in the payload
     for field in ["name", "description", "price", "mrp", "stock", "image_url", "sku", "tags", "is_active",
                   "category_id"]:
         if field in data:
             setattr(product, field, data[field])
 
-    # 3. Update Gallery Images (Delete Old -> Add New)
+    # 3. Update Gallery Images (Direct Delete & Add)
     if "gallery_images" in data:
-        # Delete old images
-        await db.execute(
-            select(models.ProductImage).where(models.ProductImage.product_id == product.id)
-        )
-        # Note: SQLAlchemy async delete logic varies, simpler is to clear list if relationship allows,
-        # but explicit delete is safer.
-        # Actually simplest async way for relationships:
-        product.gallery_images = []  # Clear logic handled by ORM if cascade is set, else manual delete
+        # ✅ FIX: Explicitly delete old images from the database
+        await db.execute(delete(models.ProductImage).where(models.ProductImage.product_id == product_id))
 
         # Add new images
         for idx, url in enumerate(data["gallery_images"]):
-            # Create new object
             new_img = models.ProductImage(
+                product_id=product_id,
                 image_url=url,
                 is_primary=(idx == 0),
                 display_order=idx
             )
-            product.gallery_images.append(new_img)
+            db.add(new_img)
 
-    # 4. Update Colors
+    # 4. Update Colors (Direct Delete & Add)
     if "colors" in data:
-        product.colors = []  # Clear old
+        # ✅ FIX: Explicitly delete old colors
+        await db.execute(delete(models.ProductColor).where(models.ProductColor.product_id == product_id))
+
         for c in data["colors"]:
-            # c is a dict from Pydantic model
             new_color = models.ProductColor(
+                product_id=product_id,
                 color_name=c['color_name'],
                 color_code=c['color_code'],
                 image_url=c.get('image_url'),
                 is_available=c.get('is_available', True)
             )
-            product.colors.append(new_color)
+            db.add(new_color)
 
-    # 5. Update Specifications
+    # 5. Update Specifications (Direct Delete & Add)
     if "specifications" in data:
-        product.specifications = []  # Clear old
+        # ✅ FIX: Explicitly delete old specifications
+        await db.execute(
+            delete(models.ProductSpecification).where(models.ProductSpecification.product_id == product_id))
+
         for s in data["specifications"]:
             new_spec = models.ProductSpecification(
+                product_id=product_id,
                 key=s['key'],
                 value=s['value'],
                 display_order=s.get('display_order', 0)
             )
-            product.specifications.append(new_spec)
+            db.add(new_spec)
 
     await db.commit()
-    await db.refresh(product)
+    # We don't need db.refresh(product) here because get_product_full_details fetches everything fresh
 
     # Return full details
     return await get_product_full_details(product_id, db)
@@ -280,81 +315,69 @@ async def delete_product(
 
 
 # 6. Get Product Reviews
-@router.post("/{product_id}/reviews", response_model=schemas.ProductReviewResponse)
-async def submit_review(
+@router.get("/{product_id}/reviews", response_model=List[schemas.ProductReviewResponse])
+async def get_product_reviews(
         product_id: int,
-        review: schemas.ReviewCreate,
-        current_user: models.User = Depends(dependencies.get_current_user),
+        skip: int = 0,
+        limit: int = 20,
+        sort_by: str = "recent",
         db: AsyncSession = Depends(database.get_db)
 ):
     """
-    Allow logged-in customer to review a product AND update product rating.
+    Get ONLY approved reviews for a product (Pagination supported)
     """
-    # 1. Check if product exists
-    result = await db.execute(select(models.Product).where(models.Product.id == product_id))
-    product = result.scalar_one_or_none()
-    if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
-
-    # 2. Check if user already reviewed
-    existing_review = await db.execute(
-        select(models.ProductReview)
-        .where(models.ProductReview.user_id == current_user.id, models.ProductReview.product_id == product_id)
+    # 🔒 FILTER ADDED: Sirf approved reviews fetch honge
+    query = select(models.ProductReview).where(
+        models.ProductReview.product_id == product_id,
+        models.ProductReview.is_approved == True
     )
-    if existing_review.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="You have already reviewed this product")
 
-    # 3. Create Review
-    new_review = models.ProductReview(
-        product_id=product_id,
-        user_id=current_user.id,
-        rating=review.rating,
-        comment=review.comment,
-        is_approved=False,  # Admin approval required? (Set True if auto-approve)
-        is_featured=False,
-        helpful_count=0,
-        is_verified_purchase=False,
-        created_at=str(datetime.now()),
-        updated_at=str(datetime.now())
-    )
-    db.add(new_review)
+    # Sorting Logic
+    if sort_by == "recent":
+        query = query.order_by(models.ProductReview.created_at.desc())
+    elif sort_by == "rating_high":
+        query = query.order_by(models.ProductReview.rating.desc())
+    elif sort_by == "rating_low":
+        query = query.order_by(models.ProductReview.rating.asc())
 
-    # ✅ 4. UPDATE PRODUCT RATING (Calculations)
-    current_count = product.review_count or 0
-    current_avg = product.average_rating or 0.0
+    # Pagination
+    query = query.offset(skip).limit(limit)
 
-    # Calculate New Average
-    # Formula: (Old_Total_Score + New_Rating) / New_Count
-    new_count = current_count + 1
-    total_score = (current_count * current_avg) + review.rating
-    new_average = total_score / new_count
+    # Eager load User data
+    query = query.options(selectinload(models.ProductReview.user))
 
-    # Update Product Fields
-    product.review_count = new_count
-    product.average_rating = round(new_average, 1)  # 1 decimal place (e.g., 4.5)
+    result = await db.execute(query)
+    reviews = result.scalars().all()
 
-    db.add(product)  # Mark product as updated
+    # Formatting Response
+    formatted_reviews = []
+    for review in reviews:
+        # Safe Image Parsing
+        image_urls = []
+        if review.image_urls:
+            try:
+                image_urls = json.loads(review.image_urls)
+            except:
+                image_urls = []
 
-    # 5. Commit Transaction
-    await db.commit()
-    await db.refresh(new_review)
+        formatted_reviews.append(schemas.ProductReviewResponse(
+            id=review.id,
+            product_id=review.product_id,
+            user_id=review.user_id,
+            user_name=review.user.full_name if (review.user and review.user.full_name) else "Anonymous",
+            user_avatar=review.user.avatar_url if (review.user and review.user.avatar_url) else None,
+            rating=review.rating,
+            comment=review.comment,
+            is_verified_purchase=review.is_verified_purchase,
+            helpful_count=review.helpful_count,
+            created_at=str(review.created_at),
+            updated_at=str(review.updated_at),
+            image_urls=image_urls,
+            is_approved=review.is_approved,
+            is_featured=review.is_featured
+        ))
 
-    # Return Response
-    return {
-        "id": new_review.id,
-        "product_id": new_review.product_id,
-        "user_id": new_review.user_id,
-        "user_name": current_user.full_name or "Guest",
-        "rating": new_review.rating,
-        "comment": new_review.comment,
-        "is_verified_purchase": new_review.is_verified_purchase,
-        "helpful_count": new_review.helpful_count,
-        "created_at": str(new_review.created_at),
-        "updated_at": str(new_review.updated_at),
-        "image_urls": [],
-        "is_approved": new_review.is_approved,
-        "is_featured": new_review.is_featured
-    }
+    return formatted_reviews
 
 # 7. Add Product Review
 @router.get("/{product_id}/full", response_model=schemas.ProductDetailResponse)
@@ -379,27 +402,43 @@ async def get_product_full_details(
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    # 👇 LOGIC: Calculate Rating & Count Dynamically
+    # Calculate pricing fields
+    selling_price = product.selling_price if product.selling_price is not None else (product.price or 0.0)
+    cost_price = product.cost_price if product.cost_price is not None else 0.0
+    tax_percentage = product.tax_percentage if product.tax_percentage is not None else 18.0
+
+    # Base Price (Reverse Tax Calculation)
+    if tax_percentage > 0:
+        base_price = selling_price / (1 + (tax_percentage / 100))
+    else:
+        base_price = selling_price
+
+    # Tax Amount
+    tax_amount = selling_price - base_price
+
+    # Profit Calculation
+    profit_amount = base_price - cost_price
+    profit_margin = (profit_amount / cost_price * 100) if cost_price > 0 else 0.0
+
+    # Calculate Rating & Count Dynamically
     real_reviews = product.reviews or []
     real_count = len(real_reviews)
 
     if real_count > 0:
-        # Handle case where rating might be None in DB
         total_stars = sum((r.rating or 0) for r in real_reviews)
         real_rating = round(total_stars / real_count, 1)
     else:
         real_rating = 0.0
 
-    # Format reviews (With Safety Try-Catch)
+    # Format reviews
     formatted_reviews = []
     for review in real_reviews:
-        # ✅ CRASH FIX: Safe JSON Parsing
         review_images = []
         if review.image_urls:
             try:
                 review_images = json.loads(review.image_urls)
             except Exception:
-                review_images = []  # Ignore bad data
+                review_images = []
 
         formatted_reviews.append(schemas.ProductReviewResponse(
             id=review.id,
@@ -423,29 +462,54 @@ async def get_product_full_details(
     if product.gallery_images:
         gallery = [img.image_url for img in product.gallery_images if img.image_url]
 
+    # Colors
+    colors_list = []
+    if product.colors:
+        colors_list = [
+            {"color_name": c.color_name, "color_code": c.color_code, "image_url": c.image_url}
+            for c in product.colors
+        ]
+
+    # Specifications
+    specifications_list = []
+    if product.specifications:
+        specifications_list = [{"key": s.key, "value": s.value} for s in product.specifications]
+
     # Create response
     return schemas.ProductDetailResponse(
         id=product.id,
         name=product.name,
         description=product.description or "",
-        price=product.price,
+
+        # NEW FIELDS
+        cost_price=cost_price,
+        selling_price=selling_price,
+        final_price=selling_price,
+        tax_percentage=tax_percentage,
+
+        # Calculated Fields
+        base_price=round(base_price, 2),
+        tax_amount=round(tax_amount, 2),
+        profit_amount=round(profit_amount, 2),
+        profit_margin=round(profit_margin, 2),
+
+        # Legacy Fields
+        price=selling_price,
         mrp=product.mrp,
         stock=product.stock,
         image_url=product.image_url or "",
         category_id=product.category_id,
         is_active=product.is_active,
         sku=product.sku or "",
-
         tags=product.tags or [],
 
         average_rating=real_rating,
         review_count=real_count,
-
         wishlist_count=product.wishlist_count,
+
         gallery_images=gallery,
-        colors=[{"color_name": c.color_name, "color_code": c.color_code, "image_url": c.image_url} for c in
-                (product.colors or [])],
-        specifications=[{"key": s.key, "value": s.value} for s in (product.specifications or [])],
+        colors=colors_list,
+        specifications=specifications_list,
         reviews=formatted_reviews
     )
 # 8. Get Recommended Products
@@ -598,7 +662,6 @@ async def bulk_update_products(
 # Helper function to get full product details
 async def get_product_full_details(product_id: int, db: AsyncSession):
     """Get product with all related data"""
-    # Query with all relationships
     query = select(models.Product).where(models.Product.id == product_id).options(
         selectinload(models.Product.gallery_images),
         selectinload(models.Product.colors),
@@ -613,47 +676,110 @@ async def get_product_full_details(product_id: int, db: AsyncSession):
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    # Format reviews with user info
+    # PRICE CALCULATION LOGIC
+    selling_price = product.selling_price if product.selling_price is not None else (product.price or 0.0)
+    cost_price = product.cost_price if product.cost_price is not None else 0.0
+    tax_percentage = product.tax_percentage if product.tax_percentage is not None else 18.0
+
+    # Base Price (Reverse Tax Calculation)
+    if tax_percentage > 0:
+        base_price = selling_price / (1 + (tax_percentage / 100))
+    else:
+        base_price = selling_price
+
+    # Tax Amount
+    tax_amount = selling_price - base_price
+
+    # Profit Calculation
+    profit_amount = base_price - cost_price
+    profit_margin = (profit_amount / cost_price * 100) if cost_price > 0 else 0.0
+
+    # REVIEWS LOGIC
+    all_reviews = product.reviews or []
+    approved_reviews = [r for r in all_reviews if r.is_approved]
+
+    real_count = len(approved_reviews)
+    if real_count > 0:
+        total_stars = sum((r.rating or 0) for r in approved_reviews)
+        real_rating = round(total_stars / real_count, 1)
+    else:
+        real_rating = 0.0
+
+    # Format Reviews
     formatted_reviews = []
-    for review in product.reviews:
-        image_urls = json.loads(review.image_urls) if review.image_urls else []
+    for review in approved_reviews:
+        image_urls = []
+        if review.image_urls:
+            try:
+                image_urls = json.loads(review.image_urls)
+            except Exception:
+                image_urls = []
+
         formatted_reviews.append(schemas.ProductReviewResponse(
             id=review.id,
             product_id=review.product_id,
             user_id=review.user_id,
-            user_name=review.user.full_name if review.user else "Anonymous",
-            user_avatar=None,  # Add if you have user avatars
+            user_name=review.user.full_name if (review.user and review.user.full_name) else "Anonymous",
+            user_avatar=review.user.avatar_url if (review.user and review.user.avatar_url) else None,
             rating=review.rating,
             comment=review.comment,
             is_verified_purchase=review.is_verified_purchase,
             helpful_count=review.helpful_count,
-            created_at=review.created_at,
-            updated_at=review.updated_at,
-            image_urls=image_urls
+            created_at=str(review.created_at),
+            updated_at=str(review.updated_at),
+            image_urls=image_urls,
+            is_approved=review.is_approved,
+            is_featured=review.is_featured
         ))
 
-    # Create response
+    # Gallery
+    gallery = []
+    if product.gallery_images:
+        gallery = [img.image_url for img in product.gallery_images if img.image_url]
+
+    # Colors
+    colors_list = []
+    if product.colors:
+        colors_list = [{"color_name": c.color_name, "color_code": c.color_code, "image_url": c.image_url} for c in
+                       product.colors]
+
+    # Specifications
+    specifications_list = []
+    if product.specifications:
+        specifications_list = [{"key": s.key, "value": s.value} for s in product.specifications]
+
+    # RETURN RESPONSE
     return schemas.ProductDetailResponse(
         id=product.id,
         name=product.name,
-        description=product.description,
-        price=product.price,
+        description=product.description or "",
+
+        # New Price Fields
+        cost_price=cost_price,
+        selling_price=selling_price,
+        tax_percentage=tax_percentage,
+        base_price=round(base_price, 2),
+        tax_amount=round(tax_amount, 2),
+        profit_amount=round(profit_amount, 2),
+        profit_margin=round(profit_margin, 2),
+        final_price=selling_price,
+
+        # Legacy Fields
+        price=selling_price,
         mrp=product.mrp,
         stock=product.stock,
-        image_url=product.image_url,
+        image_url=product.image_url or "",
         category_id=product.category_id,
         is_active=product.is_active,
-        sku=product.sku,
-
-        # ✅ FIX: Handle None (null) value from DB
+        sku=product.sku or "",
         tags=product.tags or [],
 
-        average_rating=product.average_rating,
-        review_count=product.review_count,
+        average_rating=real_rating,
+        review_count=real_count,
         wishlist_count=product.wishlist_count,
-        gallery_images=[img.image_url for img in product.gallery_images],
-        colors=[{"color_name": c.color_name, "color_code": c.color_code, "image_url": c.image_url} for c in
-                product.colors],
-        specifications=[{"key": s.key, "value": s.value} for s in product.specifications],
+
+        gallery_images=gallery,
+        colors=colors_list,
+        specifications=specifications_list,
         reviews=formatted_reviews
     )

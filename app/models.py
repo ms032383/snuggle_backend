@@ -1,6 +1,8 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, Text, ForeignKey, Date, ARRAY
+from sqlalchemy import Column, Integer, String, Float, Boolean, Text, ForeignKey, Date, ARRAY,DateTime
 from sqlalchemy.orm import relationship
 from .database import Base
+from datetime import datetime
+
 
 
 
@@ -50,6 +52,9 @@ class Product(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, index=True)
     description = Column(Text, nullable=True)
+    cost_price = Column(Float, nullable=True)  # Actual cost to produce/buy
+    selling_price = Column(Float)  # Final selling price (what customer pays)
+    tax_percentage = Column(Float, default=18.0)  # GST/VAT percentage
     price = Column(Float)
     mrp = Column(Float, nullable=True)  # ✅ ADDED: Max Retail Price
     stock = Column(Integer, default=10)
@@ -71,7 +76,8 @@ class Product(Base):
     meta_title = Column(String, nullable=True)
     meta_description = Column(Text, nullable=True)
     slug = Column(String, unique=True, nullable=True)
-
+    profit_margin = Column(Float, nullable=True)  # Calculated profit percentage
+    profit_amount = Column(Float, nullable=True)  # Calculated profit amount
     # Foreign keys
     category_id = Column(Integer, ForeignKey("categories.id"))
 
@@ -314,3 +320,45 @@ class ProductSpecification(Base):
     display_order = Column(Integer, default=0)
 
     product = relationship("Product", back_populates="specifications")
+
+
+class StoreSetting(Base):
+    """
+    Stores dynamic website configuration like Home Hero Image,
+    Trending Title, Badges, and other page images.
+    Only one row should exist in this table.
+    """
+    __tablename__ = "store_settings"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Home Page
+    hero_image_url = Column(String, nullable=True)
+    trending_title = Column(String, default="Trending Gifts 🔥")
+
+    # Trust Badges
+    badge1_title = Column(String, default="Premium Packaging")
+    badge1_desc = Column(String, default="Wrapped with love & care")
+
+    badge2_title = Column(String, default="Fast Delivery")
+    badge2_desc = Column(String, default="Across India within 3-5 days")
+
+    badge3_title = Column(String, default="Made for Couples")
+    badge3_desc = Column(String, default="Curated for romantic moments")
+
+    # Other Pages
+    shop_hero_image_url = Column(String, nullable=True)
+    our_story_image_url = Column(String, nullable=True)
+    contact_image_url = Column(String, nullable=True)
+
+
+class StoreSettings(Base):
+    __tablename__ = "store_business_settings"   # ✅ CHANGED TABLE NAME
+
+    id = Column(Integer, primary_key=True, index=True)
+    store_name = Column(String, default="My Store")
+    address = Column(String, default="")
+    phone = Column(String, default="")
+    email = Column(String, default="")
+    gstin = Column(String, default="")
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

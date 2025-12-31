@@ -4,6 +4,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from typing import List
 from .. import models, schemas, database, dependencies
+from datetime import datetime
 
 router = APIRouter()
 
@@ -17,8 +18,6 @@ async def place_order(
         db: AsyncSession = Depends(database.get_db)
 ):
     # A. Get User's Cart
-    # Using 'scalars().first()' instead of 'scalar_one_or_none()' to prevent crashes
-    # if duplicate carts exist due to previous bugs.
     result = await db.execute(
         select(models.Cart)
         .options(selectinload(models.Cart.items).selectinload(models.CartItem.product))
@@ -42,14 +41,14 @@ async def place_order(
         item_total = item.product.price * item.quantity
         total_amount += item_total
 
-        # 3. Reduce Stock (Inventory Update)
+        # 3. Reduce Stock
         item.product.stock -= item.quantity
 
-        # 4. Prepare Order Item Snapshot
+        # 4. Prepare Order Item
         order_item = models.OrderItem(
             product_id=item.product_id,
             quantity=item.quantity,
-            price_at_purchase=item.product.price  # Freeze price at time of purchase
+            price_at_purchase=item.product.price
         )
         order_items_objects.append(order_item)
 
@@ -59,28 +58,26 @@ async def place_order(
         address_id=order_data.address_id,
         total_amount=total_amount,
         payment_method=order_data.payment_method,
-        status="Pending"
+        status="Pending",
+        created_at=str(datetime.now())  # ✅ FIX: Saving actual timestamp instead of "now"
     )
     db.add(new_order)
-    await db.flush() # Flush to generate new_order.id
+    await db.flush()
 
     # D. Link Items to Order
     for obj in order_items_objects:
         obj.order_id = new_order.id
         db.add(obj)
 
-    # E. Empty the Cart (Crucial Step)
-    # We iterate through cart items and delete them from the database
+    # E. Empty the Cart
     for item in cart.items:
         await db.delete(item)
 
     # F. Final Commit
-    # This saves the Order, Updates Stock, and Deletes Cart Items all in one go.
     await db.commit()
     await db.refresh(new_order)
 
     # G. Return Result
-    # Re-fetch order to ensure all relationships (items/address) are loaded for the response
     result = await db.execute(
         select(models.Order)
         .options(selectinload(models.Order.items).selectinload(models.OrderItem.product))
@@ -90,7 +87,6 @@ async def place_order(
     final_order = result.scalar_one()
 
     return final_order
-
 
 # ==========================================
 # 2. GET ORDERS (Handles both Admin & User)
