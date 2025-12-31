@@ -90,6 +90,7 @@ class Product(Base):
     reviews = relationship("ProductReview", back_populates="product", cascade="all, delete-orphan")
     specifications = relationship("ProductSpecification", back_populates="product", cascade="all, delete-orphan")
     tags = Column(ARRAY(String), default=[])
+    is_addon = Column(Boolean, default=False)
 
 
 # ============================
@@ -240,6 +241,7 @@ class AddOnProduct(Base):
     image_url = Column(String)
     category = Column(String, default="addon")
     is_active = Column(Boolean, default=True)
+
 
 class CouponUsage(Base):  # ✅ Fixed Line
     __tablename__ = "coupon_usages"

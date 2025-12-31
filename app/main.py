@@ -7,7 +7,7 @@ from .routes import addons
 
 # Import your project modules
 from .database import engine, Base, AsyncSessionLocal, get_db
-from .routes import products, auth, cart, address, orders, payment, home, upload, user, admin, marketing,product_enhanced,reviews,email,admin_settings
+from .routes import products, auth, cart, address, orders, payment, home, upload, user, admin, marketing,product_enhanced,reviews,email,admin_settings,addons
 
 from .init_db import init_super_admin
 from . import models
@@ -60,6 +60,7 @@ app.include_router(reviews.router, prefix="/api/reviews", tags=["Public Reviews"
 app.include_router(email.router, prefix="/api/email", tags=["Email"])
 app.include_router(marketing.router, prefix="/api/marketing", tags=["Marketing"])
 app.include_router(admin_settings.router, prefix="/api/admin", tags=["Admin Settings"])
+app.include_router(addons.router, prefix="/api", tags=["Addons"])
 app.include_router(chatbot_router)
 @app.get("/")
 def root():

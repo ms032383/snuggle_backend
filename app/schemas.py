@@ -53,10 +53,10 @@ class CategoryResponse(CategoryBase):
 class ProductBase(BaseModel):
     name: str
     description: Optional[str] = None
-    price: float
+    price: Optional[float] = 0.0
     stock: int = 10
     image_url: Optional[str] = None
-    category_id: int
+    category_id: Optional[int] = None
 
 class ProductCreate(ProductBase):
     pass
@@ -68,6 +68,7 @@ class ProductResponse(ProductBase):
     average_rating: float = 0.0
     review_count: int = 0
     mrp: Optional[float] = None
+    is_addon: bool = False
     class Config:
         from_attributes = True
 
@@ -276,14 +277,17 @@ class AddToCartRequest(BaseModel):
     size: Optional[str] = None
     color: Optional[str] = None
 
-
+class AddOnCreate(BaseModel):
+    name: str
+    price: float
+    category: str = "General"
 class AddOnProductResponse(BaseModel):
     id: int
     name: str
     price: float
-    image_url: str
+    image_url: Optional[str] = None
     category: str
-
+    is_active: bool
     class Config:
         from_attributes = True
 
